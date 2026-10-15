@@ -11,7 +11,7 @@ This plugin:
 
 - Registers Octane's service provider. Winter disables Laravel's package discovery, so installing `laravel/octane` by itself has no effect.
 - Clears request state at the start of every Octane operation, before Octane's own listeners run.
-- Records the client address on the back-end auth manager for each request, after the trusted-proxy middleware, so login throttling is scoped to the right client.
+- Records the client address on every auth manager (back-end and front-end) for each request, after the trusted-proxy middleware, so login throttling is scoped to the right client.
 - Calls `resetWorkerState()` on any plugin that defines it, so other plugins can clear their own request state.
 
 ## Requirements

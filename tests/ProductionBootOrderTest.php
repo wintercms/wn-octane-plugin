@@ -18,7 +18,8 @@ use Illuminate\Http\Request;
  * This case rebuilds the application with the real plugins directory in place before providers
  * register, so Winter.Octane is registered by PluginManager::registerAll() exactly as a deployed
  * worker would register it. The ordering assertion below failed against the register-phase
- * attachment this plugin originally shipped with, and passes with the booted() attachment.
+ * attachment this plugin originally shipped with, and passes with the current register-phase
+ * attachment at PHP_INT_MAX priority.
  */
 class ProductionBootOrderTest extends PersistentWorkerTestCase
 {

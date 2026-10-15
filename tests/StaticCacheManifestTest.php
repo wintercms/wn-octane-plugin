@@ -141,6 +141,40 @@ class StaticCacheManifestTest extends PluginTestCase
     }
 
     /**
+     * The same rule for the manager and auth manager manifests. The auth manager's address is the
+     * one deliberate exception: its default is a placeholder, and null tells the next read that no
+     * address has been recorded yet.
+     */
+    public function testManagerResetValuesMatchTheDeclaredDefaults()
+    {
+        $reflection = new ReflectionClass(ResetsRequestState::class);
+        $manifest = $reflection->getConstant('MANAGER_STATE');
+        $manifest[\Winter\Storm\Auth\Manager::class] = array_diff_key(
+            $reflection->getConstant('AUTH_MANAGER_STATE'),
+            ['ipAddress' => true]
+        );
+        $problems = [];
+
+        foreach ($manifest as $class => $properties) {
+            $defaults = (new ReflectionClass($class))->getDefaultProperties();
+
+            foreach ($properties as $property => $value) {
+                if (array_key_exists($property, $defaults) && $defaults[$property] !== $value) {
+                    $problems[] = sprintf(
+                        '%s::$%s defaults to %s but is reset to %s',
+                        $class,
+                        $property,
+                        var_export($defaults[$property], true),
+                        var_export($value, true)
+                    );
+                }
+            }
+        }
+
+        $this->assertSame([], $problems, implode("\n  ", $problems));
+    }
+
+    /**
      * Every manager property the reset clears must still exist, or a rename in core would silently
      * stop the reset rather than fail.
      */

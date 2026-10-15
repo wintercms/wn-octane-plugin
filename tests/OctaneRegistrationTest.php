@@ -79,12 +79,17 @@ class OctaneRegistrationTest extends PluginTestCase
         \Illuminate\Support\Facades\Log::spy();
 
         try {
-            $callbacks->setValue($navigation, [function () {
-            }]);
+            $core = \Closure::bind(function () {
+            }, null, \Backend\ServiceProvider::class);
+            $plugin = function () {
+            };
+
+            $callbacks->setValue($navigation, [$plugin, $core]);
             (new \Winter\Octane\Plugin($this->app))->boot();
             \Illuminate\Support\Facades\Log::shouldNotHaveReceived('warning');
 
-            $callbacks->setValue($navigation, []);
+            // A plugin's own callback must not hide the missing core registration.
+            $callbacks->setValue($navigation, [$plugin]);
             (new \Winter\Octane\Plugin($this->app))->boot();
             \Illuminate\Support\Facades\Log::shouldHaveReceived('warning')->once();
         }

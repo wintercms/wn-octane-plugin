@@ -4,7 +4,7 @@ use Closure;
 use Illuminate\Http\Request;
 
 /**
- * Records the client address on the back-end auth manager for the current request.
+ * Records the client address on every resolved auth manager for the current request.
  *
  * Storm's auth manager captures Request::ip() once, when the singleton is constructed, and uses it to
  * scope login throttling. A worker constructs it once, so every later request would be throttled
@@ -20,8 +20,8 @@ class ResolveAuthIpAddress
      */
     public function handle(Request $request, Closure $next)
     {
-        if (app()->resolved(\Backend\Classes\AuthManager::class)) {
-            \Backend\Classes\AuthManager::instance()->ipAddress = $request->ip();
+        foreach (ResetsRequestState::resolvedAuthManagers(app()) as $manager) {
+            $manager->ipAddress = $request->ip();
         }
 
         return $next($request);

@@ -43,8 +43,24 @@ class Plugin extends PluginBase
         }
 
         $navigation = \Backend\Classes\NavigationManager::instance();
+        $callbacks = (new \ReflectionProperty($navigation, 'callbacks'))->getValue($navigation);
 
-        if ((new \ReflectionProperty($navigation, 'callbacks'))->getValue($navigation) === []) {
+        /*
+         * Look for the callback core registers, not just any callback: a plugin registering its own
+         * navigation would otherwise hide the missing core registration.
+         */
+        $coreRegistered = false;
+
+        foreach ($callbacks as $callback) {
+            if ($callback instanceof \Closure
+                && (new \ReflectionFunction($callback))->getClosureScopeClass()?->getName() === \Backend\ServiceProvider::class
+            ) {
+                $coreRegistered = true;
+                break;
+            }
+        }
+
+        if (!$coreRegistered) {
             \Illuminate\Support\Facades\Log::warning(
                 'Winter.Octane: no back-end navigation was registered in this worker, so back-end '
                 . 'pages will have empty menus and settings. Update Winter to a version that '
@@ -99,10 +115,21 @@ class Plugin extends PluginBase
         $dispatcher = new \ReflectionMethod(\Winter\Storm\Events\Dispatcher::class, 'addInterfaceListeners');
 
         if ($dispatcher->getDeclaringClass()->getName() !== \Winter\Storm\Events\Dispatcher::class) {
-            \Illuminate\Support\Facades\Log::warning(
-                'Winter.Octane: this version of Storm cannot dispatch interface listeners, so Octane '
-                . 'was not registered. Update winter/storm before serving through Octane.'
-            );
+            $message = 'Winter.Octane: this version of Storm cannot dispatch interface listeners, so '
+                . 'Octane was not registered. Update winter/storm before serving through Octane.';
+
+            /*
+             * Inside a worker, fail the boot so the server says why. Under PHP-FPM the plugin has
+             * nothing to do, so stay quiet rather than log on every request. Console commands
+             * (octane:start among them) log once per run.
+             */
+            if ($this->app->bound('Laravel\Octane\Contracts\Client')) {
+                throw new \RuntimeException($message);
+            }
+
+            if ($this->app->runningInConsole()) {
+                \Illuminate\Support\Facades\Log::warning($message);
+            }
 
             return;
         }

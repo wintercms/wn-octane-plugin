@@ -413,6 +413,152 @@ class RequestStateResetTest extends PersistentWorkerTestCase
         $this->assertSame([0], $levels, 'an abandoned transaction must be rolled back to depth zero');
     }
 
+    /**
+     * When the rollback itself fails, the connection is disconnected and the next operation starts
+     * at depth zero. Both the abandoned transaction and the failure are logged.
+     */
+    public function testAFailedRollbackIsLoggedAndTheConnectionReset()
+    {
+        $levels = [];
+
+        $this->addWorkerRoute('_worker/tx-break', function () {
+            $connection = app('db')->connection();
+
+            // A PDO whose rollback fails for a reason other than a lost connection. setPdo() resets
+            // the transaction counter, so the transaction is opened afterward.
+            $connection->setPdo(new class ('sqlite::memory:') extends \PDO {
+                public function inTransaction(): bool
+                {
+                    return true;
+                }
+
+                public function rollBack(): bool
+                {
+                    throw new \PDOException('rollback failed');
+                }
+            });
+            $connection->beginTransaction();
+
+            return 'broken';
+        });
+
+        $this->addWorkerRoute('_worker/tx-level', function () use (&$levels) {
+            $levels[] = app('db')->connection()->transactionLevel();
+
+            return 'read';
+        });
+
+        RequestStateResetTestRecordingReset::$warnings = [];
+        $this->bootWorker()->bind(
+            \Winter\Octane\Classes\ResetsRequestState::class,
+            RequestStateResetTestRecordingReset::class
+        );
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/tx-break', 'GET'),
+            Request::create('/_worker/tx-level', 'GET')
+        );
+
+        $this->assertSame([0], $levels);
+        $this->assertCount(
+            2,
+            RequestStateResetTestRecordingReset::$warnings,
+            'the open transaction and the failed rollback must both be logged'
+        );
+    }
+
+    /**
+     * Every manager property in the manifest must be back at its reset value when the next request
+     * starts, including Storm's query cache and the media player partial flags.
+     */
+    public function testManagerStateIsClearedBetweenRequests()
+    {
+        $manifest = (new \ReflectionClass(\Winter\Octane\Classes\ResetsRequestState::class))->getConstant('MANAGER_STATE');
+        $seen = [];
+
+        $this->bootWorker();
+
+        foreach (array_keys($manifest) as $manager) {
+            $manager::instance();
+        }
+
+        $this->addWorkerRoute('_worker/managers-dirty', function () use ($manifest) {
+            foreach ($manifest as $manager => $properties) {
+                $instance = $manager::instance();
+
+                foreach (array_keys($properties) as $property) {
+                    (new \ReflectionProperty($instance, $property))->setValue($instance, ['dirty' => true]);
+                }
+            }
+
+            return 'dirty';
+        });
+
+        $this->addWorkerRoute('_worker/managers-read', function () use ($manifest, &$seen) {
+            foreach ($manifest as $manager => $properties) {
+                $instance = $manager::instance();
+
+                foreach (array_keys($properties) as $property) {
+                    $seen[$manager . '::$' . $property] = (new \ReflectionProperty($instance, $property))
+                        ->getValue($instance);
+                }
+            }
+
+            return 'read';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/managers-dirty', 'GET'),
+            Request::create('/_worker/managers-read', 'GET')
+        );
+
+        $expected = [];
+
+        foreach ($manifest as $manager => $properties) {
+            foreach ($properties as $property => $value) {
+                $expected[$manager . '::$' . $property] = $value;
+            }
+        }
+
+        $this->assertSame($expected, $seen);
+    }
+
+    /**
+     * Front-end auth managers extend Storm's manager just like the back-end one, and one resolved
+     * at boot would otherwise serve the previous visitor's user and address.
+     */
+    public function testEveryAuthManagerIsResetAndGetsTheClientAddress()
+    {
+        $seen = [];
+
+        $this->bootWorker();
+        RequestStateResetTestFrontEndAuth::instance();
+
+        $this->addWorkerRoute('_worker/front-auth-set', function () {
+            $manager = RequestStateResetTestFrontEndAuth::instance();
+            (new \ReflectionProperty($manager, 'user'))->setValue($manager, new \stdClass());
+
+            return 'set';
+        });
+
+        $this->addWorkerRoute('_worker/front-auth-read', function () use (&$seen) {
+            $manager = RequestStateResetTestFrontEndAuth::instance();
+            $seen = [
+                (new \ReflectionProperty($manager, 'user'))->getValue($manager),
+                $manager->ipAddress,
+            ];
+
+            return 'read';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/front-auth-set', 'GET'),
+            Request::create('/_worker/front-auth-read', 'GET', [], [], [], ['REMOTE_ADDR' => '10.0.0.3'])
+        );
+
+        $this->assertSame([null, '10.0.0.3'], $seen);
+    }
+
     public function testStagedTransactionCallbacksDoNotCrossRequests()
     {
         $pending = [];
@@ -489,5 +635,28 @@ class RequestStateResetTest extends PersistentWorkerTestCase
             $gates,
             'state left behind by a failed operation must still be cleared for the next one'
         );
+    }
+}
+
+/**
+ * Stands in for a front-end auth manager such as Winter.User's.
+ */
+class RequestStateResetTestFrontEndAuth extends \Winter\Storm\Auth\Manager
+{
+}
+
+/**
+ * Records the warnings the reset logs.
+ */
+class RequestStateResetTestRecordingReset extends \Winter\Octane\Classes\ResetsRequestState
+{
+    /**
+     * @var list<string>
+     */
+    public static array $warnings = [];
+
+    protected function warnQuietly(string $message, ?\Throwable $ex = null): void
+    {
+        static::$warnings[] = $message;
     }
 }

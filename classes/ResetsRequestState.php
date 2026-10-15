@@ -1,12 +1,13 @@
 <?php namespace Winter\Octane\Classes;
 
-use Illuminate\Foundation\Application;
 use Illuminate\Database\DatabaseTransactionsManager;
+use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Log;
 use System\Classes\PluginManager;
 use System\Twig\Loader as TwigLoader;
 use Throwable;
 use Winter\Octane\Contracts\ResetsWorkerState;
+use Winter\Storm\Auth\Manager as StormAuthManager;
 use Winter\Storm\Halcyon\MemoryCacheManager;
 use Winter\Storm\Halcyon\MemoryRepository;
 use Winter\Storm\Halcyon\Model as HalcyonModel;
@@ -122,6 +123,23 @@ class ResetsRequestState
     }
 
     /**
+     * Log a warning without letting the logger's own failure escape.
+     *
+     * @param string $message
+     * @param \Throwable|null $ex
+     * @return void
+     */
+    protected function warnQuietly(string $message, ?Throwable $ex = null): void
+    {
+        try {
+            Log::warning($message, $ex ? ['exception' => $ex] : []);
+        }
+        catch (Throwable $logFailure) {
+            // The log channel itself is broken; there is nowhere safe left to report to.
+        }
+    }
+
+    /**
      * Forget the resolved execution context from both containers.
      *
      * The context is derived from the request path and cached as a singleton, so the first request
@@ -206,6 +224,10 @@ class ResetsRequestState
             }
         }
 
+        foreach (static::resolvedAuthManagers($base, $sandbox) as $manager) {
+            $this->resetInstanceProperties($manager, static::AUTH_MANAGER_STATE);
+        }
+
         /*
          * Backend dispatch writes the resolved action and route parameters onto the controller
          * class itself, so a later request would otherwise attempt the previous request's action.
@@ -253,6 +275,37 @@ class ResetsRequestState
     }
 
     /**
+     * Every resolved instance of Storm's auth manager or a subclass, found by container binding.
+     *
+     * @param \Illuminate\Container\Container|null ...$containers
+     * @return list<\Winter\Storm\Auth\Manager>
+     */
+    public static function resolvedAuthManagers(?\Illuminate\Container\Container ...$containers): array
+    {
+        $managers = [];
+
+        foreach ($containers as $container) {
+            if ($container === null) {
+                continue;
+            }
+
+            foreach (array_keys($container->getBindings()) as $abstract) {
+                if (!$container->resolved($abstract) || !is_a($abstract, StormAuthManager::class, true)) {
+                    continue;
+                }
+
+                $manager = $container->make($abstract);
+
+                if ($manager instanceof StormAuthManager && !in_array($manager, $managers, true)) {
+                    $managers[] = $manager;
+                }
+            }
+        }
+
+        return $managers;
+    }
+
+    /**
      * Per-request caches held in static properties, as class => [property => value after reset].
      *
      * These are memoized for the duration of one request by design, but a static property outlives
@@ -278,6 +331,10 @@ class ResetsRequestState
 
         // Parsed file contents and source markers, which survive edits to those files.
         \Cms\Classes\CodeParser::class => ['cache' => []],
+
+        // Component properties for every CMS object, in one map with no theme key. clearCache()
+        // only forgets the external entry, so edits never reach a worker that loaded the map.
+        \Cms\Classes\CmsCompoundObject::class => ['objectComponentPropertyMap' => null],
 
         // Whether the base Snowboard asset has been emitted. Left set, later responses omit it.
         \Cms\Twig\SnowboardNode::class => ['baseLoaded' => false],
@@ -360,18 +417,34 @@ class ResetsRequestState
         // Resolved component details, including localized strings.
         \Cms\Classes\ComponentManager::class => ['detailsCache' => null],
 
-        // The resolved user, impersonator and throttle models. The client address is recorded again
-        // for each HTTP request by ResolveAuthIpAddress.
-        \Backend\Classes\AuthManager::class => [
-            'user' => null,
-            'impersonator' => null,
-            'throttle' => [],
-            'viaRemember' => false,
-            'ipAddress' => null,
-            // once() turns sessions off and, on a Storm without the fix, leaves them off when
-            // authentication throws.
-            'useSession' => true,
-        ],
+        // Storm's query cache. Writes from other workers, cron or queues never invalidate it, so a
+        // cached row (a back-end user's persist code, a ban, a setting) would otherwise be served
+        // for the life of the worker.
+        \Winter\Storm\Database\MemoryCache::class => ['cache' => [], 'tableMap' => []],
+
+        // Whether the theme has a media player partial, remembered per worker.
+        \Cms\Classes\MediaViewHelper::class => ['playerPartialFlags' => []],
+    ];
+
+    /**
+     * Request-derived state on every auth manager, as property => value after reset.
+     *
+     * Applied to each resolved instance of Storm's auth manager or a subclass, which covers the
+     * back-end manager and front-end ones such as Winter.User's. A manager resolved at boot is
+     * shared by every request, and check() trusts a cached user without consulting the session.
+     *
+     * @var array<string, mixed>
+     */
+    protected const AUTH_MANAGER_STATE = [
+        'user' => null,
+        'impersonator' => null,
+        'throttle' => [],
+        'viaRemember' => false,
+        // Recorded again for each HTTP request by ResolveAuthIpAddress.
+        'ipAddress' => null,
+        // once() turns sessions off and, on a Storm without the fix, leaves them off when
+        // authentication throws.
+        'useSession' => true,
     ];
 
     /**
@@ -646,19 +719,34 @@ class ResetsRequestState
 
         $connections = $sandbox->make('db')->getConnections();
 
-        foreach ($connections as $connection) {
-            while ($connection->transactionLevel() > 0) {
-                try {
-                    $connection->rollBack(0);
-                }
-                catch (Throwable $ex) {
-                    /*
-                     * The connection cannot be returned to a known state, so it must not be handed
-                     * to the next operation. Disconnecting forces a reconnect on next use.
-                     */
-                    $connection->disconnect();
-                    break;
-                }
+        foreach ($connections as $name => $connection) {
+            if ($connection->transactionLevel() === 0) {
+                continue;
+            }
+
+            $this->warnQuietly(sprintf(
+                'Winter.Octane: the previous operation left %d transaction(s) open on connection %s; '
+                . 'rolling back.',
+                $connection->transactionLevel(),
+                $name
+            ));
+
+            try {
+                $connection->rollBack(0);
+            }
+            catch (Throwable $ex) {
+                /*
+                 * The connection cannot be returned to a known state, so it must not be handed
+                 * to the next operation. Disconnecting resets the transaction counter and forces
+                 * a reconnect on next use.
+                 */
+                $this->warnQuietly(
+                    'Winter.Octane: rolling back connection ' . $name . ' failed, so it was '
+                    . 'disconnected: ' . $ex->getMessage(),
+                    $ex
+                );
+
+                $connection->disconnect();
             }
         }
 
