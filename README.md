@@ -91,7 +91,8 @@ Plugins that require this one can declare `implements \Winter\Octane\Contracts\R
 These bugs also exist under PHP-FPM, but in a worker their effects last for every later request. Each fix is a separate pull request:
 
 - [wintercms/winter#1569](https://github.com/wintercms/winter/pull/1569): a template that fails to load leaves Twig's local file inclusion enabled. This plugin also closes it at the start of every operation.
-- [wintercms/winter#1570](https://github.com/wintercms/winter/pull/1570): after a page's PHP code changes, the rebuilt class never loads and the page fails with `Class "Cms...Class" not found` until the worker restarts.
+- [wintercms/winter#1570](https://github.com/wintercms/winter/pull/1570): after a page's PHP code changes, the rebuilt class never loads and the page fails with `Class "Cms...Class" not found`. With several workers, they keep rebuilding each other's code cache.
+- [wintercms/winter#1571](https://github.com/wintercms/winter/pull/1571): a page, layout or partial edited in the CMS editor keeps rendering its old markup on every worker that already rendered it.
 - [wintercms/storm#261](https://github.com/wintercms/storm/pull/261): an exception during `Auth\Manager::once()` leaves sessions disabled. This plugin also turns them back on at the start of every operation.
 - [wintercms/storm#262](https://github.com/wintercms/storm/pull/262): an exception from a static extension method leaves the called class set.
 
