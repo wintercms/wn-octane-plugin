@@ -64,4 +64,33 @@ class OctaneRegistrationTest extends PluginTestCase
     {
         $this->assertIsArray($this->app['config']->get('octane.listeners'));
     }
+
+    /**
+     * Without wintercms/winter#1511 a worker never registers back-end navigation, which leaves every
+     * back-end page with empty menus. Boot must log that rather than fail silently.
+     */
+    public function testBootWarnsWhenAWorkerHasNoBackEndNavigation()
+    {
+        $navigation = \Backend\Classes\NavigationManager::instance();
+        $callbacks = new \ReflectionProperty($navigation, 'callbacks');
+        $registered = $callbacks->getValue($navigation);
+
+        $this->app->instance('Laravel\Octane\Contracts\Client', new \stdClass());
+        \Illuminate\Support\Facades\Log::spy();
+
+        try {
+            $callbacks->setValue($navigation, [function () {
+            }]);
+            (new \Winter\Octane\Plugin($this->app))->boot();
+            \Illuminate\Support\Facades\Log::shouldNotHaveReceived('warning');
+
+            $callbacks->setValue($navigation, []);
+            (new \Winter\Octane\Plugin($this->app))->boot();
+            \Illuminate\Support\Facades\Log::shouldHaveReceived('warning')->once();
+        }
+        finally {
+            $callbacks->setValue($navigation, $registered);
+            $this->app->forgetInstance('Laravel\Octane\Contracts\Client');
+        }
+    }
 }

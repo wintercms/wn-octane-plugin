@@ -70,7 +70,7 @@ jobs:
       - name: Lint
         working-directory: winter/plugins/winter/octane
         run: |
-          ../../../vendor/bin/parallel-lint Plugin.php routes.php classes tests
+          ../../../vendor/bin/parallel-lint Plugin.php routes.php classes contracts tests
           ../../../vendor/bin/phpcs --standard=phpcs.xml.dist
 
       - name: Static analysis

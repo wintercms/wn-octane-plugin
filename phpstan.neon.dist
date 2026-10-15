@@ -3,6 +3,7 @@ parameters:
         - Plugin.php
         - routes.php
         - classes
+        - contracts
     level: 5
     bootstrapFiles:
         - phpstan-bootstrap.php

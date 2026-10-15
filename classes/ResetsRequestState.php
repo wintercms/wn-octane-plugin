@@ -6,8 +6,9 @@ use Illuminate\Support\Facades\Log;
 use System\Classes\PluginManager;
 use System\Twig\Loader as TwigLoader;
 use Throwable;
-use Winter\Storm\Contracts\ResetsWorkerState;
-use Winter\Storm\Exception\ErrorHandler;
+use Winter\Octane\Contracts\ResetsWorkerState;
+use Winter\Storm\Halcyon\MemoryCacheManager;
+use Winter\Storm\Halcyon\MemoryRepository;
 use Winter\Storm\Halcyon\Model as HalcyonModel;
 
 /**
@@ -143,29 +144,42 @@ class ResetsRequestState
     }
 
     /**
-     * Reset the framework-level state that Storm exposes a reset for.
+     * Reset framework-level state held outside the managers.
      *
      * @return void
      */
     protected function resetCoreState(): void
     {
-        /*
-         * Applied masks are expected to balance, but an exception between applyMask() and
-         * removeMask() leaves one applied and grows the layer stack.
-         */
-        ErrorHandler::resetMaskState();
+        $this->flushHalcyonRequestCache();
 
         /*
-         * The request-level record cache only. External cache stores keep their own invalidation
-         * rules and are deliberately left alone.
-         */
-        HalcyonModel::flushRequestCache();
-
-        /*
-         * Defensive: System\Twig\Engine restores this in a finally block, but the gate gives
-         * arbitrary local file inclusion when left open, so it is worth asserting per operation.
+         * Defensive: the gate gives arbitrary local file inclusion when left open, and a Winter
+         * without the Engine fix leaves it open after a failed template load.
          */
         TwigLoader::$allowInclude = false;
+    }
+
+    /**
+     * Empty Halcyon's in-memory record cache on every store the cache manager has resolved.
+     *
+     * The cache manager is held statically, so it outlives an operation. Only the in-memory layer is
+     * cleared; the external stores it wraps keep their own invalidation rules.
+     *
+     * @return void
+     */
+    protected function flushHalcyonRequestCache(): void
+    {
+        $manager = (new \ReflectionProperty(HalcyonModel::class, 'cache'))->getValue();
+
+        if (!$manager instanceof MemoryCacheManager) {
+            return;
+        }
+
+        foreach ((new \ReflectionProperty($manager, 'stores'))->getValue($manager) as $store) {
+            if ($store instanceof MemoryRepository) {
+                $store->flushInternalCache();
+            }
+        }
     }
 
     /**
@@ -186,15 +200,9 @@ class ResetsRequestState
      */
     protected function resetManagers($base, Application $sandbox): void
     {
-        foreach ([
-            \Backend\Classes\NavigationManager::class,
-            \Backend\Classes\WidgetManager::class,
-            \System\Classes\SettingsManager::class,
-            \System\Classes\MailManager::class,
-            \Cms\Classes\ComponentManager::class,
-        ] as $manager) {
+        foreach (static::MANAGER_STATE as $manager => $properties) {
             if (class_exists($manager) && $this->isResolved($manager, $base, $sandbox)) {
-                $manager::instance()->resetWorkerState();
+                $this->resetInstanceProperties($manager::instance(), $properties);
             }
         }
 
@@ -203,17 +211,27 @@ class ResetsRequestState
          * class itself, so a later request would otherwise attempt the previous request's action.
          */
         if (class_exists(\Backend\Classes\BackendController::class, false)) {
+            // @phpstan-ignore assign.propertyType (declared as string, but null is its initial value)
             \Backend\Classes\BackendController::$action = null;
             \Backend\Classes\BackendController::$params = [];
         }
+    }
 
-        /*
-         * Storm's auth manager caches the resolved user, impersonator and throttle models. The
-         * backend subclass is the instance Winter actually serves requests with.
-         */
-        if (class_exists(\Backend\Classes\AuthManager::class)
-            && $this->isResolved(\Backend\Classes\AuthManager::class, $base, $sandbox)) {
-            \Backend\Classes\AuthManager::instance()->resetWorkerState();
+    /**
+     * Assign the given values to properties of an object, skipping any it does not declare.
+     *
+     * @param object $instance
+     * @param array<string, mixed> $properties
+     * @return void
+     */
+    protected function resetInstanceProperties(object $instance, array $properties): void
+    {
+        $reflection = new \ReflectionObject($instance);
+
+        foreach ($properties as $property => $value) {
+            if ($reflection->hasProperty($property)) {
+                $reflection->getProperty($property)->setValue($instance, $value);
+            }
         }
     }
 
@@ -246,6 +264,10 @@ class ResetsRequestState
      * @var array<class-string, array<string, mixed>>
      */
     protected const STATIC_CACHES = [
+        // Error masks. applyMask() and removeMask() are expected to balance, but an exception
+        // between them leaves a mask applied to the next operation's errors.
+        \Winter\Storm\Exception\ErrorHandler::class => ['activeMask' => null, 'maskLayers' => []],
+
         // Front-end request context. The CMS controller assigns itself here on construction, so a
         // stale instance exposes the previous request's page, layout, theme and variables to
         // anything reaching Controller::getController() off its own call path.
@@ -302,6 +324,57 @@ class ResetsRequestState
     ];
 
     /**
+     * Request-derived state on core singletons, as class => [property => value after reset].
+     *
+     * These are all resolved into the base container while providers register, so the sandbox never
+     * discards them. Only state an operation produced is listed; registration callbacks, aliases and
+     * definitions are built once per worker and are preserved. The manifest test asserts every entry
+     * still exists, so a rename in core fails a test instead of silently disabling a reset.
+     *
+     * @var array<class-string, array<string, mixed>>
+     */
+    protected const MANAGER_STATE = [
+        // The main and side menus, filtered by the first user's permissions.
+        \Backend\Classes\NavigationManager::class => [
+            'items' => null,
+            'quickActions' => null,
+            'contextOwner' => null,
+            'contextMainMenuItemCode' => null,
+            'contextSideMenuItemCode' => null,
+        ],
+
+        // listReportWidgets() removes entries the current user lacks permission for from the cache.
+        \Backend\Classes\WidgetManager::class => ['reportWidgets' => null],
+
+        // Settings items, filtered by the first user's permissions.
+        \System\Classes\SettingsManager::class => [
+            'items' => null,
+            'groupedItems' => null,
+            'contextOwner' => null,
+            'contextItemCode' => null,
+        ],
+
+        // Database-backed templates, and a render mode toggle that a throw mid-render leaves set.
+        \System\Classes\MailManager::class => ['templateCache' => [], 'isHtmlRenderMode' => false],
+
+        // Resolved component details, including localized strings.
+        \Cms\Classes\ComponentManager::class => ['detailsCache' => null],
+
+        // The resolved user, impersonator and throttle models. The client address is recorded again
+        // for each HTTP request by ResolveAuthIpAddress.
+        \Backend\Classes\AuthManager::class => [
+            'user' => null,
+            'impersonator' => null,
+            'throttle' => [],
+            'viaRemember' => false,
+            'ipAddress' => null,
+            // once() turns sessions off and, on a Storm without the fix, leaves them off when
+            // authentication throws.
+            'useSession' => true,
+        ],
+    ];
+
+    /**
      * Per-request caches declared by a trait, as trait => [property => value after reset].
      *
      * These cannot be reset the way STATIC_CACHES entries are. A trait's static property is a
@@ -316,8 +389,8 @@ class ResetsRequestState
         // operation generates URLs against the previous operation's page.
         \Cms\Traits\UrlMaker::class => ['urlPageName' => null],
 
-        // Backend widget preferences. Backend\Traits\PreferenceMaker scopes the in-memory key to the
-        // user, so this is about bounding growth rather than preventing a leak.
+        // Backend widget preferences. The in-memory key is not scoped to the user, so a stale entry
+        // returns one user's widget preferences to the next.
         \Backend\Traits\PreferenceMaker::class => ['preferenceCache' => []],
     ];
 
@@ -635,13 +708,8 @@ class ResetsRequestState
      * Plugin register() and boot() run once per worker, so a plugin that caches request-derived data
      * has no other opportunity to clear it.
      *
-     * A plugin qualifies by implementing ResetsWorkerState or simply by declaring resetWorkerState().
-     * The second form exists because `implements` is resolved when the class is loaded, so a plugin
-     * naming the contract cannot be loaded at all by a Winter whose Storm predates it -- the plugin
-     * would not merely lose its reset, it would fatal on every request under PHP-FPM as well. A plugin
-     * that must run on both cannot afford to name the interface, and refusing to reset it would leave
-     * exactly the state this class exists to clear. Accepting the method keeps the contract meaningful
-     * where it is available without making it a condition of loading.
+     * A plugin qualifies by implementing ResetsWorkerState or simply by declaring resetWorkerState(), so
+     * a plugin can support Octane without depending on this one.
      *
      * A plugin that throws aborts the whole reset and fails the operation. That is deliberate, and it
      * is the opposite of what the rest of this class does for classes it cannot reflect. The

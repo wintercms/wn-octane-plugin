@@ -141,28 +141,22 @@ class StaticCacheManifestTest extends PluginTestCase
     }
 
     /**
-     * The managers the reset calls resetWorkerState() on must still declare it, or the call would fail
-     * at the request boundary and take the worker down.
-     *
-     * The method is asserted rather than the ResetsWorkerState contract, and deliberately so. These
-     * classes load on every request, including under PHP-FPM, and `implements` is resolved when a class
-     * is loaded. Naming a contract that a given Storm may not ship would therefore make each of them
-     * unloadable rather than merely unresettable, which is a fatal on every request. resetPlugins()
-     * accepts the bare method for the same reason.
+     * Every manager property the reset clears must still exist, or a rename in core would silently
+     * stop the reset rather than fail.
      */
-    public function testManagersInvokedByTheResetDeclareTheResetMethod()
+    public function testManagerStateManifestMatchesCore()
     {
-        foreach ([
-            \Backend\Classes\NavigationManager::class,
-            \Backend\Classes\WidgetManager::class,
-            \System\Classes\SettingsManager::class,
-            \System\Classes\MailManager::class,
-            \Cms\Classes\ComponentManager::class,
-        ] as $manager) {
-            $this->assertTrue(
-                method_exists($manager, 'resetWorkerState'),
-                $manager . ' must declare resetWorkerState().'
-            );
+        $manifest = (new \ReflectionClass(ResetsRequestState::class))->getConstant('MANAGER_STATE');
+
+        foreach ($manifest as $manager => $properties) {
+            $this->assertTrue(class_exists($manager), $manager . ' no longer exists.');
+
+            foreach (array_keys($properties) as $property) {
+                $this->assertTrue(
+                    property_exists($manager, $property),
+                    $manager . '::$' . $property . ' no longer exists.'
+                );
+            }
         }
     }
 

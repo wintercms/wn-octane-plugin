@@ -7,7 +7,7 @@ use Laravel\Octane\Events\RequestTerminated;
 use Laravel\Octane\Events\WorkerErrorOccurred;
 use RuntimeException;
 use System\Twig\Loader as TwigLoader;
-use Winter\Storm\Auth\Manager as AuthManager;
+use Backend\Classes\AuthManager;
 use Winter\Storm\Exception\ErrorHandler;
 
 /**
@@ -272,6 +272,62 @@ class RequestStateResetTest extends PersistentWorkerTestCase
 
         $this->assertCount(1, $seen);
         $this->assertNull($seen[0], 'a user resolved in one request must not be visible in the next');
+    }
+
+    /**
+     * The auth manager captures the client address once, at construction. Each HTTP request must
+     * record its own, or login throttling is scoped to the first request's address.
+     */
+    public function testTheAuthManagerRecordsEachRequestsClientAddress()
+    {
+        $seen = [];
+
+        AuthManager::instance();
+
+        $this->addWorkerRoute('_worker/auth-ip', function () use (&$seen) {
+            $seen[] = AuthManager::instance()->ipAddress;
+
+            return 'ip';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/auth-ip', 'GET', [], [], [], ['REMOTE_ADDR' => '10.0.0.1']),
+            Request::create('/_worker/auth-ip', 'GET', [], [], [], ['REMOTE_ADDR' => '10.0.0.2'])
+        );
+
+        $this->assertSame(['10.0.0.1', '10.0.0.2'], $seen);
+    }
+
+    /**
+     * Halcyon's in-memory record cache is held statically, so records cached by one request would
+     * otherwise be served to the next. Uses the file store because Octane already flushes the array
+     * store between operations.
+     */
+    public function testHalcyonRequestCacheDoesNotCrossRequests()
+    {
+        $seen = [];
+
+        $this->addWorkerRoute('_worker/halcyon-set', function () {
+            $store = \Winter\Storm\Halcyon\Model::getCacheManager()->store('file');
+            $store->putInMemoryCache('worker-test-key', 'cached');
+
+            return 'set';
+        });
+
+        $this->addWorkerRoute('_worker/halcyon-read', function () use (&$seen) {
+            $store = \Winter\Storm\Halcyon\Model::getCacheManager()->store('file');
+            $seen[] = (new \ReflectionProperty($store, 'cache'))->getValue($store);
+
+            return 'read';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/halcyon-set', 'GET'),
+            Request::create('/_worker/halcyon-read', 'GET')
+        );
+
+        $this->assertCount(1, $seen);
+        $this->assertArrayNotHasKey('worker-test-key', $seen[0]);
     }
 
     /**
