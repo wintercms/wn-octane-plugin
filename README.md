@@ -11,11 +11,15 @@ This plugin:
 
 - Registers Octane's service provider. Winter disables Laravel's package discovery, so installing `laravel/octane` by itself has no effect.
 - Clears request state at the start of every Octane operation, before Octane's own listeners run.
+- Records the client address on the back-end auth manager for each request, after the trusted-proxy middleware, so login throttling is scoped to the right client.
 - Calls `resetWorkerState()` on any plugin that defines it, so other plugins can clear their own request state.
 
 ## Requirements
 
-- Winter CMS with the worker-safety changes (currently the `feat/octane-worker-support` branches of `wintercms/winter` and `wintercms/storm`)
+- Winter CMS with these core changes, which are open pull requests until they are released:
+  - [wintercms/winter#1511](https://github.com/wintercms/winter/pull/1511) registers back-end navigation, widgets and settings in a worker.
+  - [wintercms/storm#241](https://github.com/wintercms/storm/pull/241) fixes event listeners registered against an interface, which Octane uses for its cleanup.
+- Recommended: the core fixes listed under [Related core fixes](#related-core-fixes).
 - PHP 8.1 or later
 - One of the application servers supported by Octane: FrankenPHP, Swoole or RoadRunner
 
@@ -80,7 +84,16 @@ Notes:
 - Only clear data created during a request. Event listeners, navigation items and other registrations are built once per worker and are not rebuilt if discarded.
 - Do not read the current request from this method. It runs before the incoming request has been bound, and its job is only to clear the previous one.
 
-Plugins that only support Winter versions shipping the contract can declare `implements \Winter\Storm\Contracts\ResetsWorkerState` for the compile-time check. PHP will not load a class that implements a missing interface, so plugins supporting older Winter versions should define the method without implementing the interface.
+Plugins that require this one can declare `implements \Winter\Octane\Contracts\ResetsWorkerState` for the compile-time check. PHP will not load a class that implements a missing interface, so plugins that also run without this plugin installed should define the method without implementing the interface.
+
+## Related core fixes
+
+These bugs also exist under PHP-FPM, but in a worker their effects last for every later request. Each fix is a separate pull request:
+
+- [wintercms/winter#1569](https://github.com/wintercms/winter/pull/1569): a template that fails to load leaves Twig's local file inclusion enabled. This plugin also closes it at the start of every operation.
+- [wintercms/winter#1570](https://github.com/wintercms/winter/pull/1570): after a page's PHP code changes, the rebuilt class never loads and the page fails with `Class "Cms...Class" not found` until the worker restarts.
+- [wintercms/storm#261](https://github.com/wintercms/storm/pull/261): an exception during `Auth\Manager::once()` leaves sessions disabled. This plugin also turns them back on at the start of every operation.
+- [wintercms/storm#262](https://github.com/wintercms/storm/pull/262): an exception from a static extension method leaves the called class set.
 
 ## Tests
 

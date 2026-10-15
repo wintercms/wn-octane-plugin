@@ -4,7 +4,7 @@ namespace Winter\Octane\Tests;
 
 use System\Classes\PluginBase;
 use Winter\Octane\Classes\ResetsRequestState;
-use Winter\Storm\Contracts\ResetsWorkerState;
+use Winter\Octane\Contracts\ResetsWorkerState;
 
 /**
  * A plugin must be reset whether it names the contract or merely provides the method.

@@ -2,14 +2,14 @@
 
 use System\Classes\PluginBase;
 use Winter\Octane\Classes\ResetsRequestState;
+use Winter\Octane\Classes\ResolveAuthIpAddress;
 
 /**
  * Laravel Octane support for Winter CMS.
  *
  * Registers Octane's own service provider and attaches Winter's request-state reset to the start
- * of every Octane operation. The worker-safety primitives this builds on — resettable static
- * caches, the ResetsWorkerState contract, per-request manager resets — live in Winter core and
- * Storm; this plugin is the wiring that connects them to Octane's lifecycle.
+ * of every Octane operation. Core Winter only needs to register its back-end extensions in a worker
+ * and dispatch interface listeners correctly; everything else a worker needs is cleared from here.
  */
 class Plugin extends PluginBase
 {
@@ -24,6 +24,34 @@ class Plugin extends PluginBase
      * @var bool
      */
     public $elevated = true;
+
+    /**
+     * Warn when the worker booted without Winter's back-end registrations.
+     *
+     * Winter registers back-end navigation, widgets and settings only for back-end requests unless
+     * it admits an Octane worker (wintercms/winter#1511). Without that change a worker serves every
+     * back-end page with empty menus and settings, so the missing registration is logged.
+     *
+     * @return void
+     */
+    public function boot()
+    {
+        if (!$this->app->bound('Laravel\Octane\Contracts\Client')
+            || !class_exists(\Backend\Classes\NavigationManager::class)
+        ) {
+            return;
+        }
+
+        $navigation = \Backend\Classes\NavigationManager::instance();
+
+        if ((new \ReflectionProperty($navigation, 'callbacks'))->getValue($navigation) === []) {
+            \Illuminate\Support\Facades\Log::warning(
+                'Winter.Octane: no back-end navigation was registered in this worker, so back-end '
+                . 'pages will have empty menus and settings. Update Winter to a version that '
+                . 'includes wintercms/winter#1511.'
+            );
+        }
+    }
 
     /**
      * @return array
@@ -64,42 +92,16 @@ class Plugin extends PluginBase
         }
 
         /*
-         * The reset only works when core exposes the worker-safety primitives it calls. On a core
-         * without them, registering Octane anyway would either serve traffic with no
-         * request-boundary reset (cross-user state leaks) or throw an undefined-method Error at
-         * the first boundary (an outage), so registration is refused outright and the reason is
-         * logged. composer.json constrains winter/storm, but the modules ship inside the
-         * application and version independently of it, so every module-side manager the reset
-         * invokes is probed individually. An absent class is fine — an install without the CMS
-         * module has no ComponentManager to reset — but a present manager without the reset
-         * method means a version mismatch.
+         * Octane registers its post-operation cleanup against an interface. Storm's dispatcher only
+         * handles interface listeners once it overrides addInterfaceListeners(); without that every
+         * RequestTerminated dispatch throws, so registration is refused and the reason is logged.
          */
-        $missing = !interface_exists(\Winter\Storm\Contracts\ResetsWorkerState::class)
-            // @phpstan-ignore function.alreadyNarrowedType (probes for OLDER cores; always true when analysed against this one)
-            || !method_exists(\Winter\Storm\Exception\ErrorHandler::class, 'resetMaskState')
-            // @phpstan-ignore function.alreadyNarrowedType (same version-skew probe)
-            || !method_exists(\Winter\Storm\Halcyon\Model::class, 'flushRequestCache');
+        $dispatcher = new \ReflectionMethod(\Winter\Storm\Events\Dispatcher::class, 'addInterfaceListeners');
 
-        foreach ([
-            \System\Classes\MailManager::class,
-            \System\Classes\SettingsManager::class,
-            \Backend\Classes\NavigationManager::class,
-            \Backend\Classes\WidgetManager::class,
-            \Backend\Classes\AuthManager::class,
-            \Cms\Classes\ComponentManager::class,
-        ] as $manager) {
-            if (class_exists($manager) && !method_exists($manager, 'resetWorkerState')) {
-                $missing = true;
-                break;
-            }
-        }
-
-        if ($missing) {
+        if ($dispatcher->getDeclaringClass()->getName() !== \Winter\Storm\Events\Dispatcher::class) {
             \Illuminate\Support\Facades\Log::warning(
-                'Winter.Octane: this Winter installation predates the worker-safety primitives '
-                . 'the plugin depends on, so Octane was not registered. Update Winter (all '
-                . 'modules) and Storm to versions that ship ResetsWorkerState before serving '
-                . 'through Octane.'
+                'Winter.Octane: this version of Storm cannot dispatch interface listeners, so Octane '
+                . 'was not registered. Update winter/storm before serving through Octane.'
             );
 
             return;
@@ -132,8 +134,8 @@ class Plugin extends PluginBase
          *    restored before Octane re-injects them for the current operation.
          *
          * Running first is safe because the reset reads NOTHING from the incoming request: it
-         * only discards previous state. Anything request-derived — the auth manager's throttle
-         * address above all — is resolved lazily, after the middleware that makes it trustworthy.
+         * only discards previous state. The auth manager's client address is recorded later, by
+         * ResolveAuthIpAddress, after the trusted-proxy middleware has run.
          */
         foreach ([
             \Laravel\Octane\Events\RequestReceived::class,
@@ -142,6 +144,15 @@ class Plugin extends PluginBase
             \Laravel\Octane\Events\WorkerErrorOccurred::class,
         ] as $event) {
             $this->app->make('events')->listen($event, [ResetsRequestState::class, 'handle'], PHP_INT_MAX);
+        }
+
+        /*
+         * Appended to the global stack, so it runs after the trusted-proxy middleware.
+         */
+        $kernel = $this->app->make(\Illuminate\Contracts\Http\Kernel::class);
+
+        if ($kernel instanceof \Illuminate\Foundation\Http\Kernel) {
+            $kernel->pushMiddleware(ResolveAuthIpAddress::class);
         }
     }
 }

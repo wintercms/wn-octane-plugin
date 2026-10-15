@@ -30,6 +30,7 @@
     <file>Plugin.php</file>
     <file>routes.php</file>
     <file>classes/</file>
+    <file>contracts/</file>
     <file>tests/</file>
 
     <exclude-pattern>*/vendor/*</exclude-pattern>

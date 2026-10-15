@@ -5,7 +5,6 @@ namespace Winter\Octane\Tests;
 use Backend\Classes\BackendController;
 use Backend\Classes\NavigationManager;
 use Backend\Classes\WidgetManager;
-use Backend\Facades\BackendAuth as BackendAuthFacade;
 use Illuminate\Http\Request;
 use System\Classes\SettingsManager;
 
@@ -214,116 +213,5 @@ class CrossUserStateTest extends PersistentWorkerTestCase
         $this->assertCount(2, $seen);
         $this->assertNull($seen[1][0], 'the previous action must not survive into the next request');
         $this->assertSame([], $seen[1][1], 'the previous parameters must not survive either');
-    }
-
-    /**
-     * Backend\Traits\PreferenceMaker memoizes preferences in a static keyed by widget and controller.
-     *
-     * The storage model behind it is scoped to one user, but the in-memory key was not, so under a
-     * worker the entry one user filled was returned to the next. The key now includes the user, which
-     * fixes it for PHP-FPM as well: the same static is shared by every request a process serves.
-     *
-     * The trait is exercised through a stand-in rather than a real widget so the test does not need a
-     * backend session, a controller or the database. What is being asserted is the cache key, and the
-     * stand-in uses the real trait, so the real keying logic runs.
-     */
-    public function testPreferenceCacheIsScopedToTheUser()
-    {
-        $this->bootWorker();
-
-        $widget = new PreferenceMakerStandIn();
-
-        $keys = [];
-        $storageKeys = [];
-
-        foreach ([7, 9, null] as $userId) {
-            BackendAuthFacade::swap(new StubAuthManager($userId));
-
-            $keys[$userId ?? 'guest'] = $widget->cacheKey();
-            $storageKeys[$userId ?? 'guest'] = $widget->storageKey();
-        }
-
-        BackendAuthFacade::clearResolvedInstances();
-
-        $this->assertNotSame($keys[7], $keys[9], 'two users must not share a preference cache entry');
-        $this->assertNotSame(
-            $keys[7],
-            $keys['guest'],
-            'an authenticated user must not share a preference cache entry with an unauthenticated one'
-        );
-
-        $this->assertStringContainsString(
-            $storageKeys[7],
-            $keys[7],
-            'the cache key must still contain the storage key, so the two stay in step'
-        );
-
-        $this->assertSame(
-            array_values(array_unique($storageKeys)),
-            [$storageKeys[7]],
-            'the storage key must not vary by user, or preferences saved before this change are lost'
-        );
-        $this->assertStringNotContainsString(
-            '7',
-            $storageKeys[7],
-            'the user must not have leaked into the storage key'
-        );
-    }
-}
-
-/**
- * Exercises Backend\Traits\PreferenceMaker's keying without a controller, session or database.
- *
- * Only the two key builders are exposed; both are the trait's own, so the composition under test is
- * the real one. The authenticated user reaches the trait through the BackendAuth facade, which the
- * test swaps for StubAuthManager.
- */
-class PreferenceMakerStandIn
-{
-    use \Backend\Traits\PreferenceMaker;
-
-    public function cacheKey(): string
-    {
-        return $this->getPreferenceCacheKey();
-    }
-
-    public function getId(): string
-    {
-        return 'stand-in';
-    }
-
-    public function storageKey(): string
-    {
-        return $this->getPreferenceKey();
-    }
-}
-
-/**
- * Stands in for the backend auth manager, reporting whichever user the test is acting as.
- */
-class StubAuthManager
-{
-    public function __construct(protected ?int $userId)
-    {
-    }
-
-    public function getUser()
-    {
-        return $this->userId === null ? null : new StubUser($this->userId);
-    }
-}
-
-/**
- * The narrowest thing PreferenceMaker asks of a user: its primary key.
- */
-class StubUser
-{
-    public function __construct(protected int $id)
-    {
-    }
-
-    public function getKey(): int
-    {
-        return $this->id;
     }
 }
