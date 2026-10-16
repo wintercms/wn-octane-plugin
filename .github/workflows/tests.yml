@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Winter and Storm are checked out at the head of their development branch, so a weekly run
+  # catches a core change that breaks the plugin before it is released.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
