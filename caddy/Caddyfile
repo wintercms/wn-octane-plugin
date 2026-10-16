@@ -43,6 +43,8 @@
 
 		# Winter serves from the project root, so only the paths Winter's .htaccess whitelists may be
 		# served as files. Every other request, including every other PHP file, goes to the worker.
+		# Caddy decodes and cleans the path (dot segments, repeated slashes) before these matchers
+		# see it, so /modules/x/assets/../../../.env is matched as /.env and goes to the worker.
 		@public {
 			file
 			path_regexp ^/(\.well-known|storage/app/(uploads/public|media|resized)|storage/temp/public)/|^/(themes|plugins|modules)/.+/(assets|resources)/

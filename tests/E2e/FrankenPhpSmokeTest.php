@@ -129,10 +129,15 @@ class FrankenPhpSmokeTest extends TestCase
             '/artisan' => 'Artisan',
             '/config/app.php' => 'Fatal error',
             '/plugins/winter/octane/Plugin.php' => 'Fatal error',
+            '/modules/system/assets/../../../.env' => 'APP_KEY',
+            '/modules/system/assets/%2e%2e/%2e%2e/%2e%2e/.env' => 'APP_KEY',
+            '/modules/system/assets/..%2f..%2f..%2fcomposer.json' => '"require"',
+            '/storage/app/media/../../../composer.json' => '"require"',
+            '/modules/system/assets/../../../config/app.php' => 'Fatal error',
         ];
 
         foreach ($leaks as $path => $marker) {
-            [$status, $body] = $this->fetch($path);
+            [$status, $body] = $this->fetchRaw($path);
             $message = "{$path} was served or executed directly instead of going to the application";
 
             $this->assertSame($notFoundStatus, $status, $message);
@@ -334,6 +339,32 @@ class FrankenPhpSmokeTest extends TestCase
                 $status = (int) $matches[1];
             }
         }
+
+        return [$status, $body];
+    }
+
+    /**
+     * Fetch a path exactly as given. Clients such as curl remove dot segments before sending, which
+     * would hide a traversal the server lets through.
+     *
+     * @param string $path
+     * @return array{0: int|null, 1: string} HTTP status (null when no response) and body.
+     */
+    protected function fetchRaw(string $path): array
+    {
+        $socket = @stream_socket_client('tcp://127.0.0.1:' . $this->port, $errorCode, $errorMessage, 10);
+
+        if ($socket === false) {
+            return [null, ''];
+        }
+
+        stream_set_timeout($socket, 10);
+        fwrite($socket, "GET {$path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+        $response = (string) stream_get_contents($socket);
+        fclose($socket);
+
+        [$head, $body] = array_pad(explode("\r\n\r\n", $response, 2), 2, '');
+        $status = preg_match('#^HTTP/\S+\s(\d{3})#', $head, $matches) ? (int) $matches[1] : null;
 
         return [$status, $body];
     }
