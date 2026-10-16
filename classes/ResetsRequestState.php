@@ -7,6 +7,7 @@ use System\Classes\PluginManager;
 use System\Twig\Loader as TwigLoader;
 use Throwable;
 use Winter\Octane\Contracts\ResetsWorkerState;
+use Winter\Storm\Database\MemoryCache as QueryMemoryCache;
 use Winter\Storm\Halcyon\MemoryCacheManager;
 use Winter\Storm\Halcyon\MemoryRepository;
 use Winter\Storm\Halcyon\Model as HalcyonModel;
@@ -151,6 +152,13 @@ class ResetsRequestState
     protected function resetCoreState(): void
     {
         $this->flushHalcyonRequestCache();
+
+        /*
+         * Storm caches duplicate queries for the rest of the process, and only a write made through
+         * this process clears it. Storm turns the cache off for console processes, but a worker is
+         * not one, so without this a row changed by another worker is never read again here.
+         */
+        QueryMemoryCache::instance()->flush();
 
         /*
          * Defensive: the gate gives arbitrary local file inclusion when left open, and a Winter
