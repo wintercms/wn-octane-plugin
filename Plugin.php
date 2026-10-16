@@ -7,12 +7,38 @@ use Winter\Octane\Classes\ResolveAuthIpAddress;
 /**
  * Laravel Octane support for Winter CMS.
  *
- * Registers Octane's own service provider and attaches Winter's request-state reset to the start
- * of every Octane operation. Core Winter only needs to register its back-end extensions in a worker
- * and dispatch interface listeners correctly; everything else a worker needs is cleared from here.
+ * Registers Octane's own service provider, registers Winter's back-end extensions in a worker, and
+ * attaches Winter's request-state reset to the start of every Octane operation. Core Winter only
+ * needs to dispatch interface listeners correctly; everything else a worker needs is handled here.
  */
 class Plugin extends PluginBase
 {
+    /**
+     * The registration methods each core provider runs only for back-end requests, in the order
+     * core runs them: System registers the Backend and Cms providers before its own registrations.
+     *
+     * @var array<class-string, list<string>>
+     */
+    protected const BACKEND_REGISTRATIONS = [
+        \Backend\ServiceProvider::class => [
+            'registerBackendNavigation',
+            'registerBackendReportWidgets',
+            'registerBackendWidgets',
+            'registerBackendSettings',
+        ],
+        \Cms\ServiceProvider::class => [
+            'registerBackendNavigation',
+            'registerBackendReportWidgets',
+            'registerBackendWidgets',
+            'registerBackendSettings',
+        ],
+        \System\ServiceProvider::class => [
+            'registerBackendNavigation',
+            'registerBackendReportWidgets',
+            'registerBackendSettings',
+        ],
+    ];
+
     /**
      * The request-boundary reset is a correctness invariant, not a feature: a worker serving
      * requests without it silently leaks state — auth, execution context, error-handler masks,
@@ -26,30 +52,45 @@ class Plugin extends PluginBase
     public $elevated = true;
 
     /**
-     * Warn when the worker booted without Winter's back-end registrations.
+     * Register Winter's back-end navigation, widgets and settings in a worker.
      *
-     * Winter registers back-end navigation, widgets and settings only for back-end requests unless
-     * it admits an Octane worker (wintercms/winter#1511). Without that change a worker serves every
-     * back-end page with empty menus and settings, so the missing registration is logged.
+     * The System, Backend and Cms service providers register these only when the current request is
+     * a back-end request. A worker registers its providers once, against the request it boots with,
+     * which is not a back-end request, so every back-end page it later serves would have empty menus
+     * and settings. Each registration only stores a callback that runs on first use, so making them
+     * after the providers have registered is cheap and has the same effect.
+     *
+     * This runs from a booting callback: after every provider has registered, and before any
+     * provider or plugin boots. Core's callbacks therefore come before callbacks that plugins add
+     * when they boot, and before anything lists form widgets, as they do under PHP-FPM.
      *
      * @return void
      */
-    public function boot()
+    public function registerBackendExtensions(): void
     {
-        if (!$this->app->bound('Laravel\Octane\Contracts\Client')
-            || !class_exists(\Backend\Classes\NavigationManager::class)
-        ) {
+        if (!$this->app->bound('Laravel\Octane\Contracts\Client') || $this->app->runningInBackend()) {
             return;
         }
 
-        $navigation = \Backend\Classes\NavigationManager::instance();
+        foreach (static::BACKEND_REGISTRATIONS as $providerClass => $methods) {
+            $provider = $this->app->getProvider($providerClass);
 
-        if ((new \ReflectionProperty($navigation, 'callbacks'))->getValue($navigation) === []) {
-            \Illuminate\Support\Facades\Log::warning(
-                'Winter.Octane: no back-end navigation was registered in this worker, so back-end '
-                . 'pages will have empty menus and settings. Update Winter to a version that '
-                . 'includes wintercms/winter#1511.'
-            );
+            if ($provider === null) {
+                continue;
+            }
+
+            foreach ($methods as $method) {
+                if (!method_exists($provider, $method)) {
+                    \Illuminate\Support\Facades\Log::warning(
+                        "Winter.Octane: {$providerClass}::{$method}() no longer exists, so this worker "
+                        . 'may be missing some back-end navigation, widgets or settings.'
+                    );
+
+                    continue;
+                }
+
+                (fn () => $this->{$method}())->call($provider);
+            }
         }
     }
 
@@ -108,6 +149,10 @@ class Plugin extends PluginBase
         }
 
         $this->app->register(\Laravel\Octane\OctaneServiceProvider::class);
+
+        $this->app->booting(function () {
+            $this->registerBackendExtensions();
+        });
 
         /*
          * The reset deliberately runs at the start of every operation rather than the end. An
