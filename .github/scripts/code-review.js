@@ -246,7 +246,7 @@ async function markPriorReviewStale (github, owner, repo, prNumber, prior, headS
   }
   const banner = `${STALE_MARKER}
 > [!CAUTION]
-> A review of \`${headSha}\` failed. The review below covers an OLDER revision of this PR.`;
+> \`${headSha}\` was not reviewed. The review below covers an OLDER revision of this PR.`;
   await github.rest.pulls.updateReview({
     owner,
     repo,
@@ -355,6 +355,9 @@ module.exports = async function run ({ github, context, core }) {
       core.notice(rawDiff === null
         ? 'GitHub would not produce a diff for this pull request because it is too large, so it was not reviewed.'
         : 'This pull request has no changes to review.');
+      if (prior) {
+        await markPriorReviewStale(github, owner, repo, pr.number, prior, headSha);
+      }
       return;
     }
     const { diff, truncated } = truncateDiff(rawDiff);

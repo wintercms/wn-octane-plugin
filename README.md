@@ -82,6 +82,7 @@ Notes:
 - The method may be called more than once per request (for example, after a request that threw an exception partway through), so it must be safe to run repeatedly.
 - Only clear data created during a request. Event listeners, navigation items and other registrations are built once per worker and are not rebuilt if discarded.
 - Do not read the current request from this method. It runs before the incoming request has been bound, and its job is only to clear the previous one.
+- Do not change configuration or resolve services from this method. It runs before Octane gives the operation its own copy of the configuration and points services at the new application, so a `Config::set()` here changes the configuration for every later request.
 - Do not put registrations behind `App::runningInBackend()` in `register()` or `boot()`. A worker runs those methods once, against a request that is not a back-end request, so anything behind that check is never registered. Registrations that only store a callback, such as navigation and settings, cost little, so make them unconditionally.
 
 Plugins that require this one can declare `implements \Winter\Octane\Contracts\ResetsWorkerState` for the compile-time check. PHP will not load a class that implements a missing interface, so plugins that also run without this plugin installed should define the method without implementing the interface.

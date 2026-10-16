@@ -205,6 +205,17 @@ test('run skips with a notice when the diff is empty or too large', async () => 
   }
 });
 
+test('run marks its prior review stale when it skips a head it cannot review', async () => {
+  const prior = { id: 42, user: { login: review.BOT_LOGIN }, body: review.buildReviewBody('APPROVED', 'old', { ...meta, sha: 'old' }) };
+  const github = fakeGithub({ reviews: [prior], diffError: Object.assign(new Error('too large'), { status: 406 }) });
+  const core = fakeCore();
+
+  await runWith({ github, core });
+
+  assert.equal(github.calls.updated.length, 1);
+  assert.ok(review.reviewHeader(github.calls.updated[0].body).includes(review.STALE_MARKER));
+});
+
 test('run discards the review when the head moved during the model call', async () => {
   const github = fakeGithub({ headShas: ['abc123', 'def456'] });
   const core = fakeCore();

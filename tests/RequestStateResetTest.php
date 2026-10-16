@@ -16,6 +16,14 @@ use Winter\Storm\Exception\ErrorHandler;
  * These run through Octane's real ApplicationGateway against a single application instance, so a
  * leak here is the same leak a worker would exhibit in production.
  */
+/**
+ * Stands in for a plugin's auth manager, such as Winter.User's front-end one, that this plugin cannot
+ * list by name.
+ */
+class FrontEndAuthManager extends \Winter\Storm\Auth\Manager
+{
+}
+
 class RequestStateResetTest extends PersistentWorkerTestCase
 {
     public function testTheWorkerServesSeveralRequestsFromOneApplication()
@@ -278,6 +286,29 @@ class RequestStateResetTest extends PersistentWorkerTestCase
      * The auth manager captures the client address once, at construction. Each HTTP request must
      * record its own, or login throttling is scoped to the first request's address.
      */
+    /**
+     * The reset clears the address on every auth manager, so the middleware must record it again on
+     * every one, or a front-end manager throttles all clients as one address.
+     */
+    public function testEveryStormAuthManagerRecordsEachRequestsClientAddress()
+    {
+        $this->bootWorker();
+        FrontEndAuthManager::instance();
+        $seen = [];
+
+        $this->addWorkerRoute('_worker/front-auth-ip', function () use (&$seen) {
+            $seen[] = FrontEndAuthManager::instance()->ipAddress;
+
+            return 'ip';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/front-auth-ip', 'GET', [], [], [], ['REMOTE_ADDR' => '10.0.0.1']),
+            Request::create('/_worker/front-auth-ip', 'GET', [], [], [], ['REMOTE_ADDR' => '10.0.0.2'])
+        );
+
+        $this->assertSame(['10.0.0.1', '10.0.0.2'], $seen);
+    }
     public function testTheAuthManagerRecordsEachRequestsClientAddress()
     {
         $seen = [];
@@ -334,6 +365,95 @@ class RequestStateResetTest extends PersistentWorkerTestCase
         $this->assertSame(['Before', 'After'], $seen);
     }
 
+    /**
+     * Storm's getUser() returns the user a manager already holds without checking the session, so
+     * every auth manager that outlives an operation must be cleared, not only the back-end one.
+     */
+    public function testEveryStormAuthManagerForgetsItsUser()
+    {
+        $this->bootWorker();
+        FrontEndAuthManager::instance();
+        $seen = [];
+
+        $this->addWorkerRoute('_worker/front-auth-set', function () {
+            (new \ReflectionProperty(\Winter\Storm\Auth\Manager::class, 'user'))
+                ->setValue(FrontEndAuthManager::instance(), new \stdClass());
+
+            return 'set';
+        });
+
+        $this->addWorkerRoute('_worker/front-auth-read', function () use (&$seen) {
+            $seen[] = (new \ReflectionProperty(\Winter\Storm\Auth\Manager::class, 'user'))
+                ->getValue(FrontEndAuthManager::instance());
+
+            return 'read';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/front-auth-set', 'GET'),
+            Request::create('/_worker/front-auth-read', 'GET')
+        );
+
+        $this->assertSame([null], $seen, 'a front-end user resolved in one request must not be visible in the next');
+    }
+
+    /**
+     * An abandoned transaction is rolled back at the start of the NEXT operation. Its rollback
+     * callbacks belong to the request that registered them and must not run as the next one.
+     */
+    public function testRollbackCallbacksOfAnAbandonedTransactionDoNotRun()
+    {
+        $ran = [];
+
+        $this->addWorkerRoute('_worker/tx-rollback-callback', function () use (&$ran) {
+            $connection = app('db')->connection();
+            $connection->beginTransaction();
+            $connection->afterRollBack(function () use (&$ran) {
+                $ran[] = 'rollback callback';
+            });
+
+            return 'staged';
+        });
+
+        $this->addWorkerRoute('_worker/tx-next', fn () => 'next');
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/tx-rollback-callback', 'GET'),
+            Request::create('/_worker/tx-next', 'GET')
+        );
+
+        $this->assertSame([], $ran);
+    }
+
+    /**
+     * Component properties are memoized in a static for the request. A worker must read them again,
+     * or an edit served by another worker is never seen here.
+     */
+    public function testComponentPropertyMapDoesNotCrossRequests()
+    {
+        $seen = [];
+
+        $this->addWorkerRoute('_worker/component-map-set', function () {
+            (new \ReflectionProperty(\Cms\Classes\CmsCompoundObject::class, 'objectComponentPropertyMap'))
+                ->setValue(null, ['stale' => true]);
+
+            return 'set';
+        });
+
+        $this->addWorkerRoute('_worker/component-map-read', function () use (&$seen) {
+            $seen[] = (new \ReflectionProperty(\Cms\Classes\CmsCompoundObject::class, 'objectComponentPropertyMap'))
+                ->getValue();
+
+            return 'read';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/component-map-set', 'GET'),
+            Request::create('/_worker/component-map-read', 'GET')
+        );
+
+        $this->assertSame([null], $seen);
+    }
     public function testHalcyonRequestCacheDoesNotCrossRequests()
     {
         $seen = [];
@@ -475,6 +595,37 @@ class RequestStateResetTest extends PersistentWorkerTestCase
      * ApplicationGateway::terminate(), so RequestTerminated is never dispatched and cleanup
      * attached only to that event would not run.
      */
+    /**
+     * Octane reports a failed operation's exception from a default-priority WorkerErrorOccurred
+     * listener. The reset on that event must run after it, so the report still sees the request's
+     * user, and must still clear the user afterwards.
+     */
+    public function testAFailedOperationIsReportedBeforeItsStateIsCleared()
+    {
+        $this->bootWorker();
+        $userWhenReported = 'not reported';
+
+        $this->app['events']->listen(WorkerErrorOccurred::class, function () use (&$userWhenReported) {
+            $userWhenReported = (new \ReflectionProperty(\Winter\Storm\Auth\Manager::class, 'user'))
+                ->getValue(AuthManager::instance());
+        });
+
+        \Laravel\Octane\Facades\Octane::route('GET', '/_worker/fail-signed-in', function () {
+            (new \ReflectionProperty(\Winter\Storm\Auth\Manager::class, 'user'))
+                ->setValue(AuthManager::instance(), new \stdClass());
+
+            throw new RuntimeException('failure while signed in');
+        });
+
+        $results = $this->dispatchWorkerRequests(Request::create('/_worker/fail-signed-in', 'GET'));
+
+        $this->assertInstanceOf(RuntimeException::class, $results[0]);
+        $this->assertInstanceOf(\stdClass::class, $userWhenReported, 'the report must see the failed request\'s user');
+        $this->assertNull(
+            (new \ReflectionProperty(\Winter\Storm\Auth\Manager::class, 'user'))->getValue(AuthManager::instance()),
+            'the error-path reset must still clear the user'
+        );
+    }
     public function testAnEscapingExceptionSkipsRequestTerminatedButStillCleansUp()
     {
         $events = [];
