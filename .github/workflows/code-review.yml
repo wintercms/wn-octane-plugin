@@ -1,8 +1,10 @@
 # Automated pull request review from a model called through OpenRouter.
 #
-# The review is posted as a COMMENT review by github-actions[bot]: it never approves or blocks a
-# pull request, and this check must never be made required. Each push rewrites the same review in
-# place, so the pull request carries one review that describes its current head.
+# github-actions[bot] posts the verdict as a real review: CHANGES NEEDED requests changes and
+# APPROVED approves (or, where the repository does not let Actions approve, dismisses its own request
+# for changes and posts the approval as a comment). Each push is reviewed again, and a review whose
+# verdict has not changed is rewritten in place. Requesting a review on the pull request, or running
+# this workflow by hand with a pull request number, re-reviews even an unchanged head.
 #
 # Pull requests from forks get no secrets, so for them the run skips with a notice.
 #
@@ -16,18 +18,26 @@ name: Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, review_requested]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: number
 
 permissions:
   contents: read
   pull-requests: write
 
 concurrency:
-  group: code-review-${{ github.event.pull_request.number }}
+  group: code-review-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   review:
-    if: github.event.pull_request.draft == false && github.event.pull_request.user.type != 'Bot'
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.pull_request.draft == false && github.event.pull_request.user.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -36,7 +46,7 @@ jobs:
       - name: Checkout the review script and standards (base branch)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
           persist-credentials: false
           sparse-checkout: |
             REVIEW.md
@@ -54,6 +64,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.CODE_REVIEW_KEY }}
           REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'openai/gpt-6.1-sol' }}
           REVIEW_EFFORT: ${{ vars.REVIEW_EFFORT || 'medium' }}
+          REVIEW_PR_NUMBER: ${{ inputs.pr_number }}
         with:
           script: |
             const run = require('./.github/scripts/code-review.js');

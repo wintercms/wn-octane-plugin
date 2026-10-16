@@ -158,7 +158,7 @@ ${banner}
 
 ${noteBlock}${text}
 
-*Automated review of \`${meta.sha}\` by \`${meta.model}\` via OpenRouter. It does not block merging.*`;
+*Automated review of \`${meta.sha}\` by \`${meta.model}\` via OpenRouter. Request a review to run it again.*`;
 }
 
 async function callOpenRouter ({ apiKey, model, effort, prompt, fetchImpl = fetch }) {
@@ -296,6 +296,60 @@ function reviewHeader (body) {
   return body.split('\n\n', 1)[0];
 }
 
+/**
+ * Post the verdict as a real review: CHANGES NEEDED requests changes, APPROVED approves.
+ *
+ * A review whose state already matches the verdict is rewritten in place, so the pull request
+ * carries one current review rather than one per push. A changed verdict needs a new review,
+ * because editing a body never changes a review's state. GitHub refuses approvals from the
+ * workflow token unless the repository allows Actions to approve pull requests; in that case the
+ * bot dismisses its own standing request for changes and posts the approval as a comment.
+ */
+async function submitReview ({ github, core, owner, repo, prNumber, headSha, verdict, body, prior }) {
+  const wanted = verdict === 'APPROVED' ? ['APPROVED', 'COMMENTED'] : ['CHANGES_REQUESTED'];
+
+  if (prior && wanted.includes(prior.state)) {
+    await github.rest.pulls.updateReview({ owner, repo, pull_number: prNumber, review_id: prior.id, body });
+    core.info(`Rewrote the ${prior.state} review in place (${verdict}).`);
+    return;
+  }
+
+  const create = (event) => github.rest.pulls.createReview({
+    owner,
+    repo,
+    pull_number: prNumber,
+    commit_id: headSha,
+    event,
+    body
+  });
+
+  if (verdict === 'CHANGES NEEDED') {
+    await create('REQUEST_CHANGES');
+    core.info('Requested changes.');
+    return;
+  }
+
+  try {
+    await create('APPROVE');
+    core.info('Approved.');
+  } catch (err) {
+    if (err.status !== 422 && err.status !== 403) {
+      throw err;
+    }
+
+    core.info(`GitHub refused the approval (${err.status}), so it is posted as a comment.`);
+    if (prior && prior.state === 'CHANGES_REQUESTED') {
+      await github.rest.pulls.dismissReview({
+        owner,
+        repo,
+        pull_number: prNumber,
+        review_id: prior.id,
+        message: `Superseded by an approving review of ${headSha}.`
+      });
+    }
+    await create('COMMENT');
+  }
+}
 function truncateDiff (diff, maxChars = MAX_DIFF_CHARS) {
   if (diff.length <= maxChars) {
     return { diff, truncated: false };
@@ -309,7 +363,16 @@ function truncateDiff (diff, maxChars = MAX_DIFF_CHARS) {
 module.exports = async function run ({ github, context, core }) {
   const owner = context.repo.owner;
   const repo = context.repo.repo;
-  const pr = context.payload.pull_request;
+
+  /**
+   * A manual run (workflow_dispatch) names the pull request; every other run comes from a
+   * pull_request event. Both kinds of request re-review a head that was already reviewed.
+   */
+  const manual = context.eventName === 'workflow_dispatch';
+  const pr = manual
+    ? (await github.rest.pulls.get({ owner, repo, pull_number: Number(process.env.REVIEW_PR_NUMBER) })).data
+    : context.payload.pull_request;
+  const forced = manual || context.payload.action === 'review_requested';
 
   const apiKey = process.env.OPENROUTER_API_KEY;
   const model = process.env.REVIEW_MODEL;
@@ -343,8 +406,8 @@ module.exports = async function run ({ github, context, core }) {
   const prior = await findPriorReview(github, owner, repo, pr.number);
   if (prior) {
     const header = reviewHeader(prior.body);
-    if (header.includes(`reviewed_sha=${headSha}`) && !header.includes(STALE_MARKER)) {
-      core.info(`Head ${headSha} already reviewed; skipping.`);
+    if (!forced && header.includes(`reviewed_sha=${headSha}`) && !header.includes(STALE_MARKER)) {
+      core.info(`Head ${headSha} already reviewed; skipping. Request a review to run it again.`);
       return;
     }
   }
@@ -394,30 +457,7 @@ module.exports = async function run ({ github, context, core }) {
       cutOff
     });
 
-    /**
-     * Reviews are posted as comments, so the bot never approves or blocks a pull request, and
-     * its one review is rewritten in place to describe the current head.
-     */
-    if (prior) {
-      await github.rest.pulls.updateReview({
-        owner,
-        repo,
-        pull_number: pr.number,
-        review_id: prior.id,
-        body: reviewBody
-      });
-      core.info(`Rewrote the review in place (${verdict}).`);
-    } else {
-      await github.rest.pulls.createReview({
-        owner,
-        repo,
-        pull_number: pr.number,
-        commit_id: headSha,
-        event: 'COMMENT',
-        body: reviewBody
-      });
-      core.info(`Posted a ${verdict} review.`);
-    }
+    await submitReview({ github, core, owner, repo, prNumber: pr.number, headSha, verdict, body: reviewBody, prior });
   } catch (err) {
     if (prior) {
       try {
@@ -444,4 +484,5 @@ module.exports.parseVerdict = parseVerdict;
 module.exports.pickFence = pickFence;
 module.exports.readReviewDoc = readReviewDoc;
 module.exports.reviewHeader = reviewHeader;
+module.exports.submitReview = submitReview;
 module.exports.truncateDiff = truncateDiff;
