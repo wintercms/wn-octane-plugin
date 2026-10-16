@@ -31,10 +31,13 @@ Ask for changes when the diff does one of these, and name the request sequence t
 3. **Can throw on the error path.** On `WorkerErrorOccurred` the reset runs inside the worker
    loop's catch block, and an exception there kills the worker. Every step on that path must be
    guarded, and the logging that reports a failure must be guarded too.
-4. **Changes the reset order.** The reset listeners are attached at `PHP_INT_MAX` priority so they
-   run before Octane's own listeners and before anything a third party attaches. They must also
-   run at the start of an operation, not the end: an exception that escapes the HTTP kernel skips
-   `RequestTerminated`.
+4. **Changes the reset order.** The reset listeners on `RequestReceived`, `TaskReceived` and
+   `TickReceived` are attached at `PHP_INT_MAX` priority so they run before Octane's own listeners
+   and before anything a third party attaches. They must also run at the start of an operation,
+   not the end: an exception that escapes the HTTP kernel skips `RequestTerminated`. The one
+   exception is `WorkerErrorOccurred`: that reset is attached at `PHP_INT_MIN` so Octane reports the
+   exception while the failed request's user and page are still set. It is a prompt clean-up, not
+   the guarantee, because the next operation's reset still runs first.
 5. **Reads the incoming request in the reset.** The reset only discards the previous operation's
    state. Anything that needs the current request belongs in middleware that runs after the
    trusted-proxy middleware.

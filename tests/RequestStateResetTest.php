@@ -286,6 +286,29 @@ class RequestStateResetTest extends PersistentWorkerTestCase
      * The auth manager captures the client address once, at construction. Each HTTP request must
      * record its own, or login throttling is scoped to the first request's address.
      */
+    /**
+     * The reset clears the address on every auth manager, so the middleware must record it again on
+     * every one, or a front-end manager throttles all clients as one address.
+     */
+    public function testEveryStormAuthManagerRecordsEachRequestsClientAddress()
+    {
+        $this->bootWorker();
+        FrontEndAuthManager::instance();
+        $seen = [];
+
+        $this->addWorkerRoute('_worker/front-auth-ip', function () use (&$seen) {
+            $seen[] = FrontEndAuthManager::instance()->ipAddress;
+
+            return 'ip';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/front-auth-ip', 'GET', [], [], [], ['REMOTE_ADDR' => '10.0.0.1']),
+            Request::create('/_worker/front-auth-ip', 'GET', [], [], [], ['REMOTE_ADDR' => '10.0.0.2'])
+        );
+
+        $this->assertSame(['10.0.0.1', '10.0.0.2'], $seen);
+    }
     public function testTheAuthManagerRecordsEachRequestsClientAddress()
     {
         $seen = [];
