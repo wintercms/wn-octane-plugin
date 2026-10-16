@@ -66,31 +66,75 @@ class OctaneRegistrationTest extends PluginTestCase
     }
 
     /**
-     * Without wintercms/winter#1511 a worker never registers back-end navigation, which leaves every
-     * back-end page with empty menus. Boot must log that rather than fail silently.
+     * A worker boots against a request that is not a back-end request, so core skips its back-end
+     * registrations. The plugin must make them, or every back-end page has empty menus and settings.
      */
-    public function testBootWarnsWhenAWorkerHasNoBackEndNavigation()
+    public function testRegistersBackEndExtensionsInAWorker()
     {
-        $navigation = \Backend\Classes\NavigationManager::instance();
-        $callbacks = new \ReflectionProperty($navigation, 'callbacks');
-        $registered = $callbacks->getValue($navigation);
+        $this->assertFalse($this->app->runningInBackend());
 
-        $this->app->instance('Laravel\Octane\Contracts\Client', new \stdClass());
-        \Illuminate\Support\Facades\Log::spy();
+        $registrations = $this->withEmptyBackEndRegistrations(function () {
+            $this->app->instance('Laravel\Octane\Contracts\Client', new \stdClass());
+
+            (new \Winter\Octane\Plugin($this->app))->registerBackendExtensions();
+        });
+
+        $this->assertCount(3, $registrations['navigation']);
+        $this->assertCount(3, $registrations['settings']);
+        $this->assertCount(3, $registrations['reportWidgets']);
+        $this->assertCount(2, $registrations['formWidgets']);
+    }
+
+    /**
+     * Outside a worker core already makes these registrations for back-end requests, so the plugin
+     * must not make them a second time.
+     */
+    public function testRegistersNothingOutsideAWorker()
+    {
+        $registrations = $this->withEmptyBackEndRegistrations(function () {
+            (new \Winter\Octane\Plugin($this->app))->registerBackendExtensions();
+        });
+
+        $this->assertSame([[], [], [], []], array_values($registrations));
+    }
+
+    /**
+     * Run the callback with the back-end registration callbacks emptied, and return the callbacks
+     * it registered. The original callbacks are restored afterwards.
+     *
+     * @return array<string, array>
+     */
+    protected function withEmptyBackEndRegistrations(callable $callback): array
+    {
+        $properties = [
+            'navigation' => [\Backend\Classes\NavigationManager::instance(), 'callbacks'],
+            'settings' => [\System\Classes\SettingsManager::instance(), 'callbacks'],
+            'reportWidgets' => [\Backend\Classes\WidgetManager::instance(), 'reportWidgetCallbacks'],
+            'formWidgets' => [\Backend\Classes\WidgetManager::instance(), 'formWidgetCallbacks'],
+        ];
+        $original = [];
+        $registered = [];
+
+        foreach ($properties as $key => [$object, $property]) {
+            $original[$key] = (new \ReflectionProperty($object, $property))->getValue($object);
+            (new \ReflectionProperty($object, $property))->setValue($object, []);
+        }
 
         try {
-            $callbacks->setValue($navigation, [function () {
-            }]);
-            (new \Winter\Octane\Plugin($this->app))->boot();
-            \Illuminate\Support\Facades\Log::shouldNotHaveReceived('warning');
+            $callback();
 
-            $callbacks->setValue($navigation, []);
-            (new \Winter\Octane\Plugin($this->app))->boot();
-            \Illuminate\Support\Facades\Log::shouldHaveReceived('warning')->once();
+            foreach ($properties as $key => [$object, $property]) {
+                $registered[$key] = (new \ReflectionProperty($object, $property))->getValue($object);
+            }
         }
         finally {
-            $callbacks->setValue($navigation, $registered);
+            foreach ($properties as $key => [$object, $property]) {
+                (new \ReflectionProperty($object, $property))->setValue($object, $original[$key]);
+            }
+
             $this->app->forgetInstance('Laravel\Octane\Contracts\Client');
         }
+
+        return $registered;
     }
 }

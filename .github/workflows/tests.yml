@@ -14,18 +14,18 @@ jobs:
         php: ['8.3', '8.4']
     name: PHP ${{ matrix.php }}
     steps:
-      - name: Checkout Winter (octane branch)
+      - name: Checkout Winter
         uses: actions/checkout@v5
         with:
-          repository: austinderrick/winter
-          ref: feat/octane-worker-support
+          repository: wintercms/winter
+          ref: wip/1.3
           path: winter
 
-      - name: Checkout Storm (octane branch)
+      - name: Checkout Storm
         uses: actions/checkout@v5
         with:
-          repository: austinderrick/storm
-          ref: feat/octane-worker-support
+          repository: wintercms/storm
+          ref: wip/1.3
           path: storm
 
       - name: Checkout plugin
@@ -46,11 +46,11 @@ jobs:
           composer install --no-interaction --no-progress
           composer require "laravel/octane:^2.5" --no-interaction --no-progress --with-all-dependencies
 
-      # composer/installers places the module packages into modules/, which clobbers the branch's
-      # own module changes checked out above. Reassert the branch content, then point the storm
-      # package at the branch checkout the same way the development environment does (a symlink in
-      # place of the packaged copy).
-      - name: Use the branch modules and storm
+      # composer/installers places the packaged modules into modules/, and those packages can lag
+      # the Winter checkout above. Restore the checkout's modules, then point the storm package at
+      # the storm checkout (a symlink in place of the packaged copy), so the suite runs against the
+      # current wip/1.3 commit of both.
+      - name: Use the checked-out modules and storm
         working-directory: winter
         run: |
           git checkout -- modules
