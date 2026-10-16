@@ -45,6 +45,11 @@ class FrankenPhpSmokeTest extends TestCase
      */
     protected string $serverLog = '';
 
+    /**
+     * @var string|null Where the site's own worker file was moved while the test runs.
+     */
+    protected ?string $movedWorker = null;
+
     public function setUp(): void
     {
         parent::setUp();
@@ -63,6 +68,7 @@ class FrankenPhpSmokeTest extends TestCase
     public function tearDown(): void
     {
         $this->stopServer();
+        $this->restoreWorker();
 
         parent::tearDown();
     }
@@ -101,6 +107,41 @@ class FrankenPhpSmokeTest extends TestCase
             $after['code_parser_dirty'],
             'the code parser cache planted by the previous request survived into this one'
         );
+    }
+
+    /**
+     * Winter serves from the project root, so the server must only serve Winter's whitelisted asset
+     * paths as files. Octane's own Caddyfile served any file and ran any PHP file in the project.
+     */
+    public function testOnlyWhitelistedFilesAreServed()
+    {
+        $this->startServer();
+
+        /*
+         * A path that does not exist shows how the application answers. A sensitive path must get the
+         * same status, which an executed PHP file (200 or 500) or a served file (200) would not.
+         */
+        [$notFoundStatus] = $this->fetch('/winter-octane-no-such-page');
+
+        $leaks = [
+            '/.env' => 'APP_KEY',
+            '/composer.json' => '"require"',
+            '/artisan' => 'Artisan',
+            '/config/app.php' => 'Fatal error',
+            '/plugins/winter/octane/Plugin.php' => 'Fatal error',
+        ];
+
+        foreach ($leaks as $path => $marker) {
+            [$status, $body] = $this->fetch($path);
+            $message = "{$path} was served or executed directly instead of going to the application";
+
+            $this->assertSame($notFoundStatus, $status, $message);
+            $this->assertStringNotContainsString($marker, (string) $body, $message);
+        }
+
+        [$status, $body] = $this->fetch('/modules/system/assets/js/framework.js');
+        $this->assertSame(200, $status, 'module assets must still be served as files');
+        $this->assertStringContainsString('function', (string) $body);
     }
 
     /**
@@ -245,37 +286,34 @@ class FrankenPhpSmokeTest extends TestCase
     }
 
     /**
-     * Replace Octane's generated FrankenPHP worker stub with one that works from a root docroot.
+     * Move aside a worker file that does not load Winter's bootstrap, so the plugin's command installs
+     * its own. tearDown() puts it back.
      *
-     * Octane's stock stub resolves the real worker as __DIR__.'/../vendor/...', assuming it was
-     * written into a public/ directory one level below the project. Winter serves from the
-     * project root by default, so the stub lands in the root and that path escapes the project;
-     * the worker then dies before reaching frankenphp_handle_request() and the server reports
-     * "too many consecutive failures". Octane only writes the stub when the file is missing, so
-     * the corrected version written here persists across restarts. The corrected stub resolves
-     * through APP_BASE_PATH, which octane:start always passes, and works in both layouts.
+     * The command keeps any existing worker file except Octane's unmodified stub. A file from an
+     * earlier version of the README skips Winter's bootstrap/autoload.php, which lets Laravel's helpers
+     * replace Winter's, so the server would not start.
      */
     protected function ensureWorkerStubSuitsWinter(): void
     {
-        $stub = $this->winterRoot . '/frankenphp-worker.php';
+        $worker = $this->winterRoot . '/frankenphp-worker.php';
 
-        if (file_exists($stub) && !str_contains((string) file_get_contents($stub), "__DIR__.'/../vendor")) {
+        if (file_exists($worker) && !str_contains((string) file_get_contents($worker), '/bootstrap/autoload.php')) {
+            $this->movedWorker = $worker . '.e2e-backup';
+            rename($worker, $this->movedWorker);
+        }
+    }
+
+    /**
+     * Put back the worker file ensureWorkerStubSuitsWinter() moved aside.
+     */
+    protected function restoreWorker(): void
+    {
+        if ($this->movedWorker === null) {
             return;
         }
 
-        file_put_contents($stub, <<<'PHP'
-<?php
-
-// Set a default for the application base path and public path if they are missing...
-$_SERVER['APP_BASE_PATH'] = $_ENV['APP_BASE_PATH'] ?? $_SERVER['APP_BASE_PATH'] ?? __DIR__;
-$_SERVER['APP_PUBLIC_PATH'] = $_ENV['APP_PUBLIC_PATH'] ?? $_SERVER['APP_PUBLIC_PATH'] ?? __DIR__;
-
-// Winter serves from the project root by default, so this stub resolves Octane's worker through
-// the application base path rather than assuming it lives in a public/ directory one level down,
-// which is what Octane's stock stub assumes.
-require $_SERVER['APP_BASE_PATH'].'/vendor/laravel/octane/bin/frankenphp-worker.php';
-
-PHP);
+        rename($this->movedWorker, substr($this->movedWorker, 0, -strlen('.e2e-backup')));
+        $this->movedWorker = null;
     }
 
     /**

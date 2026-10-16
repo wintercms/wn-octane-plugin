@@ -1,0 +1,60 @@
+# Laravel Octane's FrankenPHP Caddyfile, adjusted for Winter CMS by the Winter.Octane plugin.
+
+{
+	{$CADDY_GLOBAL_OPTIONS}
+
+	admin {$CADDY_SERVER_ADMIN_HOST}:{$CADDY_SERVER_ADMIN_PORT}
+
+	frankenphp {
+		worker {
+			file "{$APP_PUBLIC_PATH}/frankenphp-worker.php"
+			{$CADDY_SERVER_WORKER_DIRECTIVE}
+			{$CADDY_SERVER_WATCH_DIRECTIVES}
+		}
+	}
+}
+
+{$CADDY_EXTRA_CONFIG}
+
+{$CADDY_SERVER_SERVER_NAME} {
+	log {
+		level {$CADDY_SERVER_LOG_LEVEL}
+
+		# Redact the authorization query parameter that can be set by Mercure...
+		format filter {
+			wrap {$CADDY_SERVER_LOGGER}
+			fields {
+				request>uri query {
+					replace authorization REDACTED
+				}
+			}
+		}
+	}
+
+	# Compressing the Mercure stream costs memory per subscriber and enables BREACH-style attacks...
+	@compressible not path /.well-known/mercure
+
+	route {
+		root * "{$APP_PUBLIC_PATH}"
+		encode @compressible zstd br gzip
+
+		# Mercure configuration is injected here...
+		{$CADDY_SERVER_EXTRA_DIRECTIVES}
+
+		# Winter serves from the project root, so only the paths Winter's .htaccess whitelists may be
+		# served as files. Every other request, including every other PHP file, goes to the worker.
+		@public {
+			file
+			path_regexp ^/(\.well-known|storage/app/(uploads/public|media|resized)|storage/temp/public)/|^/(themes|plugins|modules)/.+/(assets|resources)/
+			not path *.php
+		}
+		file_server @public
+
+		rewrite * /frankenphp-worker.php
+
+		php_server {
+			index off
+			file_server off
+		}
+	}
+}

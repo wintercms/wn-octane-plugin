@@ -6,6 +6,7 @@ parameters:
         - Plugin.php
         - routes.php
         - classes
+        - console
         - contracts
     level: 8
     bootstrapFiles:
