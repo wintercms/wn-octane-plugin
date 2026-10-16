@@ -123,6 +123,96 @@ class ManifestResetDispatchTest extends PersistentWorkerTestCase
     }
 
     /**
+     * Same sweep for the singleton managers: dirty every property on each manager's instance in
+     * the base container, dispatch, and confirm each was reset.
+     */
+    public function testEveryManifestedManagerPropertyIsClearedByADispatchedRequest()
+    {
+        $this->bootWorker();
+
+        $manifest = (new ReflectionClass(ResetsRequestState::class))->getConstant('MANAGER_STATE');
+        $subjects = [];
+
+        foreach ($manifest as $manager => $properties) {
+            if (!class_exists($manager)) {
+                continue;
+            }
+
+            $instance = $manager::instance();
+
+            foreach ($properties as $property => $resetValue) {
+                $reflected = (new \ReflectionObject($instance))->getProperty($property);
+                $dirty = $this->dirtyValueForProperty($reflected, $resetValue);
+                $reflected->setValue($instance, $dirty);
+
+                $subjects[] = [$manager, $property, $dirty];
+            }
+        }
+
+        $this->assertNotEmpty($subjects, 'The manager manifest is empty, so this test proves nothing.');
+
+        $observed = [];
+
+        $this->addWorkerRoute('_worker/manager-sweep', function () use ($subjects, &$observed) {
+            foreach ($subjects as [$manager, $property]) {
+                $instance = $manager::instance();
+                $observed[$manager . '::$' . $property] =
+                    (new \ReflectionObject($instance))->getProperty($property)->getValue($instance);
+            }
+
+            return 'ok';
+        });
+
+        $this->dispatchWorkerRequests(Request::create('/_worker/manager-sweep', 'GET'));
+
+        /*
+         * Compared against the dirty value rather than the reset value: some properties are
+         * legitimately set again before the route runs, such as the client address recorded by
+         * ResolveAuthIpAddress.
+         */
+        foreach ($subjects as [$manager, $property, $dirty]) {
+            $this->assertNotSame(
+                $dirty,
+                $observed[$manager . '::$' . $property],
+                sprintf('%s::$%s was still dirty when the request ran.', $manager, $property)
+            );
+        }
+    }
+
+    /**
+     * A dirty value that the property's declared type accepts.
+     *
+     * @param mixed $resetValue
+     * @return mixed
+     */
+    protected function dirtyValueForProperty(\ReflectionProperty $property, $resetValue)
+    {
+        $type = $property->getType();
+
+        if ($type === null || $type instanceof \ReflectionNamedType && $type->getName() === 'array') {
+            return $this->dirtyValueFor($resetValue);
+        }
+
+        $accepts = $type instanceof \ReflectionNamedType ? [$type->getName()] : array_map(
+            fn ($named) => $named->getName(),
+            $type instanceof \ReflectionUnionType ? $type->getTypes() : []
+        );
+
+        if (in_array('array', $accepts, true)) {
+            return ['__octane_dirty__' => true];
+        }
+
+        if (in_array('string', $accepts, true)) {
+            return '__octane_dirty__';
+        }
+
+        if (in_array('bool', $accepts, true)) {
+            return !$resetValue;
+        }
+
+        return $this->dirtyValueFor($resetValue);
+    }
+    /**
      * A value of the same shape as the reset value, but distinguishable from it.
      *
      * @param mixed $resetValue

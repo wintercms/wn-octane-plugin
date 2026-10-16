@@ -371,6 +371,10 @@ class ResetsRequestState
         // an edit served by another worker never reaches this one, and the cache TTL never applies.
         \Cms\Classes\CmsCompoundObject::class => ['objectComponentPropertyMap' => null],
 
+        // Documented as a request-level cache for CMS objects. Core no longer writes it, but anything
+        // that does expects it to be empty at the start of a request.
+        \Cms\Classes\ObjectMemoryCache::class => ['cache' => []],
+
         // Theme settings models and their values, keyed by theme.
         \Cms\Models\ThemeData::class => ['instances' => []],
 
@@ -458,6 +462,23 @@ class ResetsRequestState
         // Resolved component details, including localized strings.
         \Cms\Classes\ComponentManager::class => ['detailsCache' => null],
 
+        // Whether the current theme has a media player partial, keyed by partial name only. Left set,
+        // a partial added later is never used, and a site that switches themes per request applies
+        // one theme's answer to another.
+        \Cms\Classes\MediaViewHelper::class => ['playerPartialFlags' => []],
+
+        // Plugin versions read from version.yaml files and the database. Left set, an update run by
+        // another worker is invisible here, and an update started here works from stale versions.
+        \System\Classes\VersionManager::class => [
+            'fileVersions' => null,
+            'databaseVersions' => null,
+            'databaseHistory' => null,
+        ],
+
+        // Migration and seeder messages, which otherwise accumulate across update runs, and the
+        // product details memoized from the cache store.
+        \System\Classes\UpdateManager::class => ['messages' => [], 'productCache' => null],
+
         // The resolved user, impersonator and throttle models. The client address is recorded again
         // for each HTTP request by ResolveAuthIpAddress.
         \Backend\Classes\AuthManager::class => [
@@ -490,6 +511,11 @@ class ResetsRequestState
         // Backend widget preferences. The in-memory key is not scoped to the user, so a stale entry
         // returns one user's widget preferences to the next.
         \Backend\Traits\PreferenceMaker::class => ['preferenceCache' => []],
+
+        // The validation factory, memoized on first use. 'validator' is not pre-warmed, so the first
+        // request resolves it in its own sandbox, and the memo would keep that factory, with the
+        // sandbox container Octane flushes after the request, for the rest of the worker's life.
+        \Winter\Storm\Halcyon\Traits\Validation::class => ['validator' => null],
     ];
 
     /**
