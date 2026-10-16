@@ -2,9 +2,12 @@
 #
 # github-actions[bot] posts the verdict as a real review: CHANGES NEEDED requests changes and
 # APPROVED approves (or, where the repository does not let Actions approve, dismisses its own request
-# for changes and posts the approval as a comment). Each push is reviewed again, and a review whose
-# verdict has not changed is rewritten in place. Requesting a review on the pull request, or running
-# this workflow by hand with a pull request number, re-reviews even an unchanged head.
+# for changes and posts the approval as a comment). Each push is reviewed again. A standing request for
+# changes is rewritten in place while changes are still needed; an approval is rewritten only when it
+# is already on the current head, and otherwise a new approval is submitted for that head. An approval
+# that had to be posted as a comment is always rewritten in place.
+# Requesting a review on the pull request, or running this workflow by hand with a pull request
+# number, re-reviews even an unchanged head.
 #
 # Pull requests from forks get no secrets, so for them the run skips with a notice.
 #
