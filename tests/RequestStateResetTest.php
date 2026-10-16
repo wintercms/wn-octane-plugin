@@ -303,6 +303,37 @@ class RequestStateResetTest extends PersistentWorkerTestCase
      * otherwise be served to the next. Uses the file store because Octane already flushes the array
      * store between operations.
      */
+    /**
+     * Storm caches duplicate queries in memory, and only a write made through this process clears
+     * that cache. A row another worker changes must still be read fresh by the next request here,
+     * or a revoked permission or a changed setting is never seen.
+     */
+    public function testQueryMemoryCacheDoesNotCrossRequests()
+    {
+        $group = \Backend\Models\UserGroup::create(['name' => 'Before', 'code' => 'octane-query-cache']);
+        $seen = [];
+
+        $this->addWorkerRoute('_worker/query-cache-read', function () use (&$seen) {
+            $seen[] = \Backend\Models\UserGroup::where('code', 'octane-query-cache')->first()->name;
+
+            return 'read';
+        });
+
+        $this->dispatchWorkerRequests(Request::create('/_worker/query-cache-read', 'GET'));
+
+        /*
+         * Another worker's write: it reaches the database without passing through this process's
+         * query builder, so nothing here flushes the in-memory cache.
+         */
+        $group->getConnection()->getPdo()->exec(
+            "update backend_user_groups set name = 'After' where id = " . (int) $group->id
+        );
+
+        $this->dispatchWorkerRequests(Request::create('/_worker/query-cache-read', 'GET'));
+
+        $this->assertSame(['Before', 'After'], $seen);
+    }
+
     public function testHalcyonRequestCacheDoesNotCrossRequests()
     {
         $seen = [];
