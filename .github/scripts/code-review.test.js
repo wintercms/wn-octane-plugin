@@ -243,6 +243,50 @@ test('run re-reviews an already reviewed head when a review is requested or run 
   }
 });
 
+test('run submits a new approval for a new head instead of rewriting an older approval', async () => {
+  const prior = { id: 42, state: 'APPROVED', commit_id: 'old', user: { login: review.BOT_LOGIN }, body: review.buildReviewBody('APPROVED', 'old', { ...meta, sha: 'old' }) };
+  const github = fakeGithub({ reviews: [prior] });
+  const core = fakeCore();
+
+  await runWith({ github, core });
+
+  assert.equal(github.calls.updated.length, 0);
+  assert.deepEqual(github.calls.created.map(c => [c.event, c.commit_id]), [['APPROVE', 'abc123']]);
+});
+
+test('run rewrites an approval in place when it is already on this head', async () => {
+  const prior = { id: 42, state: 'APPROVED', commit_id: 'abc123', user: { login: review.BOT_LOGIN }, body: review.buildReviewBody('APPROVED', 'old', { ...meta, sha: 'old' }) };
+  const github = fakeGithub({ reviews: [prior] });
+  const core = fakeCore();
+
+  await runWith({ github, core, ctx: context({ action: 'review_requested' }) });
+
+  assert.equal(github.calls.created.length, 0);
+  assert.deepEqual(github.calls.updated.map(u => u.review_id), [42]);
+});
+
+test('run approves over an earlier comment review when approvals are allowed', async () => {
+  const prior = { id: 42, state: 'COMMENTED', commit_id: 'old', user: { login: review.BOT_LOGIN }, body: review.buildReviewBody('CHANGES NEEDED', 'old', { ...meta, sha: 'old' }) };
+  const github = fakeGithub({ reviews: [prior] });
+  const core = fakeCore();
+
+  await runWith({ github, core });
+
+  assert.equal(github.calls.updated.length, 0);
+  assert.deepEqual(github.calls.created.map(c => c.event), ['APPROVE']);
+});
+
+test('run rewrites an earlier comment review when GitHub refuses the approval', async () => {
+  const prior = { id: 42, state: 'COMMENTED', commit_id: 'old', user: { login: review.BOT_LOGIN }, body: review.buildReviewBody('APPROVED', 'old', { ...meta, sha: 'old' }) };
+  const github = fakeGithub({ reviews: [prior], refuseApproval: true });
+  const core = fakeCore();
+
+  await runWith({ github, core });
+
+  assert.equal(github.calls.created.length, 0);
+  assert.deepEqual(github.calls.updated.map(u => u.review_id), [42]);
+});
+
 test('run skips a head it already reviewed', async () => {
   const prior = { id: 42, user: { login: review.BOT_LOGIN }, body: review.buildReviewBody('CHANGES NEEDED', 'x', meta) };
   const github = fakeGithub({ reviews: [prior] });

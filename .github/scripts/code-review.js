@@ -299,21 +299,18 @@ function reviewHeader (body) {
 /**
  * Post the verdict as a real review: CHANGES NEEDED requests changes, APPROVED approves.
  *
- * A review whose state already matches the verdict is rewritten in place, so the pull request
- * carries one current review rather than one per push. A changed verdict needs a new review,
- * because editing a body never changes a review's state. GitHub refuses approvals from the
- * workflow token unless the repository allows Actions to approve pull requests; in that case the
- * bot dismisses its own standing request for changes and posts the approval as a comment.
+ * A standing request for changes is rewritten in place while changes are still needed, so the
+ * pull request carries one current request rather than one per push. An approval is only rewritten
+ * in place when it is already attached to this head; otherwise a new approval is submitted, because
+ * editing a review never moves it to another commit or changes its state. GitHub refuses approvals
+ * from the workflow token unless the repository allows Actions to approve pull requests; then the bot
+ * dismisses its own standing request for changes and records the approval as a comment.
  */
 async function submitReview ({ github, core, owner, repo, prNumber, headSha, verdict, body, prior }) {
-  const wanted = verdict === 'APPROVED' ? ['APPROVED', 'COMMENTED'] : ['CHANGES_REQUESTED'];
-
-  if (prior && wanted.includes(prior.state)) {
+  const rewrite = async () => {
     await github.rest.pulls.updateReview({ owner, repo, pull_number: prNumber, review_id: prior.id, body });
     core.info(`Rewrote the ${prior.state} review in place (${verdict}).`);
-    return;
-  }
-
+  };
   const create = (event) => github.rest.pulls.createReview({
     owner,
     repo,
@@ -324,8 +321,17 @@ async function submitReview ({ github, core, owner, repo, prNumber, headSha, ver
   });
 
   if (verdict === 'CHANGES NEEDED') {
+    if (prior && prior.state === 'CHANGES_REQUESTED') {
+      await rewrite();
+      return;
+    }
     await create('REQUEST_CHANGES');
     core.info('Requested changes.');
+    return;
+  }
+
+  if (prior && prior.state === 'APPROVED' && prior.commit_id === headSha) {
+    await rewrite();
     return;
   }
 
@@ -337,7 +343,11 @@ async function submitReview ({ github, core, owner, repo, prNumber, headSha, ver
       throw err;
     }
 
-    core.info(`GitHub refused the approval (${err.status}), so it is posted as a comment.`);
+    core.info(`GitHub refused the approval (${err.status}), so it is recorded as a comment.`);
+    if (prior && prior.state === 'COMMENTED') {
+      await rewrite();
+      return;
+    }
     if (prior && prior.state === 'CHANGES_REQUESTED') {
       await github.rest.pulls.dismissReview({
         owner,
@@ -350,6 +360,7 @@ async function submitReview ({ github, core, owner, repo, prNumber, headSha, ver
     await create('COMMENT');
   }
 }
+
 function truncateDiff (diff, maxChars = MAX_DIFF_CHARS) {
   if (diff.length <= maxChars) {
     return { diff, truncated: false };
