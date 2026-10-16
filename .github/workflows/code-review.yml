@@ -44,7 +44,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Skip when the base branch has no reviewer yet
-        if: hashFiles('.github/scripts/code-review.js', 'REVIEW.md') == ''
+        if: hashFiles('.github/scripts/code-review.js') == '' || hashFiles('REVIEW.md') == ''
         run: echo "::notice::The base branch has no code review script yet, so this pull request was not reviewed."
 
       - name: Review

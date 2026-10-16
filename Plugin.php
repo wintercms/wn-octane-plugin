@@ -161,10 +161,7 @@ class Plugin extends PluginBase
          * contract — never fires. Cleaning up on the way in is the only boundary that also holds
          * after a failed operation.
          *
-         * WorkerErrorOccurred is included so a failed operation is cleaned up promptly rather than
-         * leaving the worker dirty until the next request arrives.
-         *
-         * The listeners are attached at the highest priority Storm's dispatcher accepts, so the
+         * The operation listeners are attached at the highest priority Storm's dispatcher accepts, so the
          * reset runs FIRST — before Octane's own listeners (attached at default priority in
          * OctaneServiceProvider::boot()) and before anything a third party registers. Three
          * properties depend on this, and a test pins each:
@@ -186,10 +183,22 @@ class Plugin extends PluginBase
             \Laravel\Octane\Events\RequestReceived::class,
             \Laravel\Octane\Events\TaskReceived::class,
             \Laravel\Octane\Events\TickReceived::class,
-            \Laravel\Octane\Events\WorkerErrorOccurred::class,
         ] as $event) {
             $this->app->make('events')->listen($event, [ResetsRequestState::class, 'handle'], PHP_INT_MAX);
         }
+
+        /*
+         * A failed operation is also cleaned up straight away, rather than leaving the worker dirty
+         * until the next request. This one runs LAST, after Octane's ReportException listener, so the
+         * exception is reported while the failed request's user, page and action are still set. The
+         * next operation's reset still runs first, so a listener that halts propagation here cannot
+         * leave state behind.
+         */
+        $this->app->make('events')->listen(
+            \Laravel\Octane\Events\WorkerErrorOccurred::class,
+            [ResetsRequestState::class, 'handle'],
+            PHP_INT_MIN
+        );
 
         /*
          * Appended to the global stack, so it runs after the trusted-proxy middleware.

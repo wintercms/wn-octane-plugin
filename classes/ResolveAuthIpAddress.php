@@ -20,7 +20,13 @@ class ResolveAuthIpAddress
      */
     public function handle(Request $request, Closure $next)
     {
-        if (app()->resolved(\Backend\Classes\AuthManager::class)) {
+        /*
+         * Under PHP-FPM the auth manager is built for each request and reads the address itself, so
+         * this only acts in a worker.
+         */
+        if (app()->bound('Laravel\Octane\Contracts\Client')
+            && app()->resolved(\Backend\Classes\AuthManager::class)
+        ) {
             \Backend\Classes\AuthManager::instance()->ipAddress = $request->ip();
         }
 

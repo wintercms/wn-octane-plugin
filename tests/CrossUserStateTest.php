@@ -150,19 +150,34 @@ class CrossUserStateTest extends PersistentWorkerTestCase
             return 'ok';
         });
 
-        $before = count($this->readProtected(NavigationManager::instance(), 'callbacks'));
+        /*
+         * Register one of each first, so the counts below cannot be zero and a reset that empties
+         * the callbacks fails the test.
+         */
+        NavigationManager::instance()->registerCallback(function () {
+        });
+        WidgetManager::instance()->registerReportWidgets(function () {
+        });
+
+        $navigationBefore = count($this->readProtected(NavigationManager::instance(), 'callbacks'));
+        $widgetsBefore = count($this->readProtected(WidgetManager::instance(), 'reportWidgetCallbacks'));
 
         $this->dispatchWorkerRequests(
             Request::create('/_worker/registration', 'GET'),
             Request::create('/_worker/registration', 'GET')
         );
 
+        $this->assertGreaterThan(0, $navigationBefore);
         $this->assertSame(
-            $before,
+            $navigationBefore,
             $navigationCallbacks,
             'navigation registration callbacks must survive the reset'
         );
-        $this->assertNotNull($widgetCallbacks);
+        $this->assertSame(
+            $widgetsBefore,
+            $widgetCallbacks,
+            'report widget registration callbacks must survive the reset'
+        );
     }
 
     public function testSettingsItemsAreRebuiltForEachRequest()

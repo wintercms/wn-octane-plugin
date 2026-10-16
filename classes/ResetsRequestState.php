@@ -123,6 +123,36 @@ class ResetsRequestState
     }
 
     /**
+     * Messages already logged by warnOnce(), so a reset step that cannot run is reported once per
+     * worker rather than on every operation.
+     *
+     * @var array<string, true>
+     */
+    protected static array $warned = [];
+
+    /**
+     * Log a warning the first time it occurs in this worker.
+     *
+     * @param string $message
+     * @return void
+     */
+    protected function warnOnce(string $message): void
+    {
+        if (isset(static::$warned[$message])) {
+            return;
+        }
+
+        static::$warned[$message] = true;
+
+        try {
+            Log::warning($message);
+        }
+        catch (Throwable $logFailure) {
+            // The log channel itself is broken; there is nowhere safe left to report to.
+        }
+    }
+
+    /**
      * Forget the resolved execution context from both containers.
      *
      * The context is derived from the request path and cached as a singleton, so the first request
@@ -177,9 +207,21 @@ class ResetsRequestState
      */
     protected function flushHalcyonRequestCache(): void
     {
+        if (!property_exists(HalcyonModel::class, 'cache')) {
+            $this->warnOnce('Winter.Octane: Halcyon\\Model::$cache no longer exists, so the Halcyon request cache is not reset between requests.');
+
+            return;
+        }
+
         $manager = (new \ReflectionProperty(HalcyonModel::class, 'cache'))->getValue();
 
         if (!$manager instanceof MemoryCacheManager) {
+            return;
+        }
+
+        if (!(new \ReflectionObject($manager))->hasProperty('stores')) {
+            $this->warnOnce('Winter.Octane: the Halcyon cache manager has no $stores property, so the Halcyon request cache is not reset between requests.');
+
             return;
         }
 
@@ -209,11 +251,12 @@ class ResetsRequestState
     protected function resetManagers($base, Application $sandbox): void
     {
         foreach (static::MANAGER_STATE as $manager => $properties) {
-            if (class_exists($manager) && $this->isResolved($manager, $base, $sandbox)) {
+            if (class_exists($manager, false) && $this->isResolved($manager, $base, $sandbox)) {
                 $this->resetInstanceProperties($manager::instance(), $properties);
             }
         }
 
+        $this->resetAuthManagers($base ?? $sandbox);
         /*
          * Backend dispatch writes the resolved action and route parameters onto the controller
          * class itself, so a later request would otherwise attempt the previous request's action.
@@ -224,6 +267,49 @@ class ResetsRequestState
             \Backend\Classes\BackendController::$params = [];
         }
     }
+
+    /**
+     * Clear the resolved user from every Storm auth manager the container holds.
+     *
+     * Storm's Auth\Manager::getUser() returns the user it already holds without checking the
+     * session, so a manager that outlives an operation authenticates the next request as the
+     * previous user. The back-end manager is listed in MANAGER_STATE; this also covers the
+     * front-end manager from Winter.User and any other plugin's subclass, which this plugin cannot
+     * list by name.
+     *
+     * @param \Illuminate\Foundation\Application $container
+     * @return void
+     */
+    protected function resetAuthManagers(Application $container): void
+    {
+        if (!class_exists(\Winter\Storm\Auth\Manager::class, false)
+            || !property_exists(\Illuminate\Container\Container::class, 'instances')
+        ) {
+            return;
+        }
+
+        $instances = (new \ReflectionProperty(\Illuminate\Container\Container::class, 'instances'))->getValue($container);
+
+        foreach ($instances as $instance) {
+            if ($instance instanceof \Winter\Storm\Auth\Manager) {
+                $this->resetInstanceProperties($instance, static::AUTH_MANAGER_STATE);
+            }
+        }
+    }
+
+    /**
+     * The per-request properties of Winter\Storm\Auth\Manager, with their declared defaults.
+     *
+     * @var array<string, mixed>
+     */
+    protected const AUTH_MANAGER_STATE = [
+        'user' => null,
+        'impersonator' => null,
+        'throttle' => [],
+        'viaRemember' => false,
+        'ipAddress' => '0.0.0.0',
+        'useSession' => true,
+    ];
 
     /**
      * Assign the given values to properties of an object, skipping any it does not declare.
@@ -280,6 +366,10 @@ class ResetsRequestState
         // stale instance exposes the previous request's page, layout, theme and variables to
         // anything reaching Controller::getController() off its own call path.
         \Cms\Classes\Controller::class => ['instance' => null],
+
+        // Component properties for every page, layout and partial, memoized from the cache. Left set,
+        // an edit served by another worker never reaches this one, and the cache TTL never applies.
+        \Cms\Classes\CmsCompoundObject::class => ['objectComponentPropertyMap' => null],
 
         // Theme settings models and their values, keyed by theme.
         \Cms\Models\ThemeData::class => ['instances' => []],
@@ -375,7 +465,7 @@ class ResetsRequestState
             'impersonator' => null,
             'throttle' => [],
             'viaRemember' => false,
-            'ipAddress' => null,
+            'ipAddress' => '0.0.0.0',
             // once() turns sessions off and, on a Storm without the fix, leaves them off when
             // authentication throws.
             'useSession' => true,
@@ -426,7 +516,7 @@ class ResetsRequestState
     protected function resetStaticCaches(): void
     {
         foreach (static::STATIC_CACHES as $class => $properties) {
-            if (!class_exists($class)) {
+            if (!class_exists($class, false)) {
                 continue;
             }
 
@@ -440,7 +530,7 @@ class ResetsRequestState
          * in-memory copy is cleared: the external entries have their own invalidation, and forgetting
          * them every operation would defeat the cache entirely.
          */
-        if (class_exists(\Cms\Classes\Theme::class)) {
+        if (class_exists(\Cms\Classes\Theme::class, false)) {
             \Cms\Classes\Theme::resetCache(true);
         }
     }
@@ -611,13 +701,16 @@ class ResetsRequestState
      */
     protected function resetSharedViewData($base, Application $sandbox): void
     {
-        if ($base !== null && $base->resolved('view')) {
-            $factory = $base->make('view');
-        } elseif ($sandbox->resolved('view')) {
-            $factory = $sandbox->make('view');
-        } else {
+        /*
+         * Only a factory in the base container outlives an operation. One that only a sandbox
+         * resolved is discarded with it, and snapshotting it would take a failed request's shares
+         * as the baseline.
+         */
+        if ($base === null || !$base->resolved('view')) {
             return;
         }
+
+        $factory = $base->make('view');
 
         if (static::$sharedViewBaseline === null) {
             static::$sharedViewBaseline = $factory->getShared();
@@ -628,6 +721,8 @@ class ResetsRequestState
         $reflection = new \ReflectionObject($factory);
 
         if (!$reflection->hasProperty('shared')) {
+            $this->warnOnce('Winter.Octane: the view factory has no $shared property, so shared view data is not reset between requests.');
+
             return;
         }
 
@@ -635,7 +730,7 @@ class ResetsRequestState
     }
 
     /**
-     * Roll every connection back to depth zero and discard staged transaction callbacks.
+     * Discard staged transaction callbacks and roll every connection back to depth zero.
      *
      * No stock Octane listener unwinds an abandoned transaction. Leaving one open holds the
      * connection's snapshot open for the next operation, and because `db.transactions` is one of
@@ -654,25 +749,11 @@ class ResetsRequestState
 
         $connections = $sandbox->make('db')->getConnections();
 
-        foreach ($connections as $connection) {
-            while ($connection->transactionLevel() > 0) {
-                try {
-                    $connection->rollBack(0);
-                }
-                catch (Throwable $ex) {
-                    /*
-                     * The connection cannot be returned to a known state, so it must not be handed
-                     * to the next operation. Disconnecting forces a reconnect on next use.
-                     */
-                    $connection->disconnect();
-                    break;
-                }
-            }
-        }
-
         /*
-         * Replace the warmed manager rather than reaching into its records, then re-attach it to
-         * every live connection so later transactions register against the new instance.
+         * Attach a fresh transaction manager BEFORE rolling back. The rollback fires the previous
+         * operation's rollback callbacks through the manager it registered them on, and by now
+         * facades and auth resolve against the new operation's sandbox, so those callbacks would
+         * act as the next user. Swapping first discards them unrun.
          */
         $manager = new DatabaseTransactionsManager();
 
@@ -684,6 +765,30 @@ class ResetsRequestState
 
         foreach ($connections as $connection) {
             $connection->setTransactionManager($manager);
+        }
+
+        foreach ($connections as $connection) {
+            while ($connection->transactionLevel() > 0) {
+                try {
+                    $connection->rollBack(0);
+                }
+                catch (Throwable $ex) {
+                    /*
+                     * The connection cannot be returned to a known state, so it must not be handed
+                     * to the next operation. Disconnecting forces a reconnect on next use, and the
+                     * transaction depth goes back to zero: Laravel only resets it itself for a lost
+                     * connection, and a depth above zero would make the next beginTransaction()
+                     * issue a savepoint on the disconnected handle instead of reconnecting.
+                     */
+                    $connection->disconnect();
+
+                    if (property_exists($connection, 'transactions')) {
+                        (new \ReflectionProperty($connection, 'transactions'))->setValue($connection, 0);
+                    }
+
+                    break;
+                }
+            }
         }
     }
 
