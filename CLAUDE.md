@@ -67,7 +67,7 @@ Run the tests, PHPCS and PHPStan before pushing.
 - Every change to per-request state needs a test that dispatches at least two requests through
   `PersistentWorkerTestCase` and fails without the change.
 - When a change depends on a core Winter or Storm pull request, or makes one unnecessary, update
-  the README's requirements and "Related core fixes" list.
+  the README's requirements.
 - GitHub Actions are pinned to a full commit SHA with the version in a comment. Dependabot keeps
   them current.
 
