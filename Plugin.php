@@ -150,6 +150,20 @@ class Plugin extends PluginBase
 
         $this->app->register(\Laravel\Octane\OctaneServiceProvider::class);
 
+        /*
+         * Replace Octane's octane:frankenphp with the plugin's, which defaults to a Caddyfile and a worker
+         * file that suit Winter's layout. Octane's command is mapped lazily through its #[AsCommand]
+         * attribute, while this subclass has none and is added directly, and Symfony checks directly added
+         * commands first, so this one answers to the name.
+         */
+        if ($this->app->runningInConsole()) {
+            $this->app->booted(function () {
+                \Illuminate\Console\Application::starting(function ($artisan) {
+                    $artisan->resolve(\Winter\Octane\Console\StartFrankenPhpCommand::class);
+                });
+            });
+        }
+
         $this->app->booting(function () {
             $this->registerBackendExtensions();
         });

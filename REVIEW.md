@@ -62,7 +62,7 @@ Ask for changes when the diff does one of these, and name the request sequence t
   or an `implements` clause naming a missing class fails when the file loads.
 - Comments explain why the code does what it does in a worker, since that is rarely obvious from
   the code itself. Keep them accurate when the code changes.
-- Keep the README's requirements and "Related core fixes" list current when a change depends on,
+- Keep the README's requirements current when a change depends on,
   or removes the need for, a core pull request.
 
 ## Not blocking

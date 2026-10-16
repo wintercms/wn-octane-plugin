@@ -18,7 +18,6 @@ This plugin:
 ## Requirements
 
 - Winter CMS 1.3 with [wintercms/storm#241](https://github.com/wintercms/storm/pull/241), which fixes event listeners registered against an interface. Octane uses one for its cleanup.
-- Recommended: the core fixes listed under [Related core fixes](#related-core-fixes).
 - PHP 8.1 or later
 - One of the application servers supported by Octane: FrankenPHP, Swoole or RoadRunner
 
@@ -45,20 +44,12 @@ php artisan octane:start
 
 Refer to the [Octane documentation](https://laravel.com/docs/octane) for server configuration, deployment and tuning.
 
-### FrankenPHP and Winter's public path
+### FrankenPHP
 
-Winter serves from the project root by default, but the `frankenphp-worker.php` file Octane generates assumes a `public/` directory one level below the project. If the worker fails to start with `worker frankenphp-worker.php has not reached frankenphp_handle_request()`, replace the generated file in your project root with:
+Start the server with `php artisan octane:frankenphp`. The plugin replaces Octane's command with one that suits Winter's layout:
 
-```php
-<?php
-
-$_SERVER['APP_BASE_PATH'] = $_ENV['APP_BASE_PATH'] ?? $_SERVER['APP_BASE_PATH'] ?? __DIR__;
-$_SERVER['APP_PUBLIC_PATH'] = $_ENV['APP_PUBLIC_PATH'] ?? $_SERVER['APP_PUBLIC_PATH'] ?? __DIR__;
-
-require $_SERVER['APP_BASE_PATH'].'/vendor/laravel/octane/bin/frankenphp-worker.php';
-```
-
-Octane only generates the file when it is missing, so the replacement persists. Sites [using a public folder](https://wintercms.com/docs/develop/docs/setup/configuration#using-a-public-folder) are not affected.
+- **Caddyfile.** Winter serves from the project root, so Octane's own Caddyfile would serve files such as `composer.json`, `.env` and the logs, and would run any PHP file in the project directly. The plugin's [`caddy/Caddyfile`](caddy/Caddyfile) serves only the paths Winter's `.htaccess` whitelists (`storage/app/uploads/public`, `storage/app/media`, `storage/app/resized`, `storage/temp/public`, `.well-known`, and the `assets` and `resources` folders of themes, plugins and modules) and sends every other request to the worker. It is used unless you pass `--caddyfile`. If you use your own Caddyfile, apply the same whitelist.
+- **Worker file.** When `frankenphp-worker.php` is missing, or is the unmodified copy that `octane:install` writes, the plugin installs [its own](caddy/frankenphp-worker.php). Octane's version looks for the application one directory above the web root, and loads Composer's autoloader without Winter's `bootstrap/autoload.php`, which lets Laravel's global helpers (such as `trans()`) replace Winter's. Any other existing `frankenphp-worker.php` is kept. If yours came from an earlier version of this README, delete it so the plugin can install the current one.
 
 ## Disabling the plugin
 
@@ -86,16 +77,6 @@ Notes:
 - Do not put registrations behind `App::runningInBackend()` in `register()` or `boot()`. A worker runs those methods once, against a request that is not a back-end request, so anything behind that check is never registered. Registrations that only store a callback, such as navigation and settings, cost little, so make them unconditionally.
 
 Plugins that require this one can declare `implements \Winter\Octane\Contracts\ResetsWorkerState` for the compile-time check. PHP will not load a class that implements a missing interface, so plugins that also run without this plugin installed should define the method without implementing the interface.
-
-## Related core fixes
-
-These bugs also exist under PHP-FPM, but in a worker their effects last for every later request. Each fix is a separate pull request:
-
-- [wintercms/winter#1569](https://github.com/wintercms/winter/pull/1569): a template that fails to load leaves Twig's local file inclusion enabled. This plugin also closes it at the start of every operation.
-- [wintercms/winter#1570](https://github.com/wintercms/winter/pull/1570): after a page's PHP code changes, the rebuilt class never loads and the page fails with `Class "Cms...Class" not found` until the worker restarts.
-- [wintercms/storm#261](https://github.com/wintercms/storm/pull/261): an exception during `Auth\Manager::once()` leaves sessions disabled. This plugin also turns them back on at the start of every operation.
-- [wintercms/storm#262](https://github.com/wintercms/storm/pull/262): an exception from a static extension method leaves the called class set.
-- [wintercms/winter#1571](https://github.com/wintercms/winter/pull/1571): a page, layout or partial edited in the CMS keeps rendering its old content in a worker that already rendered it.
 
 ## Tests
 
