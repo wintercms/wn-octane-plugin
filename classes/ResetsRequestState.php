@@ -737,7 +737,9 @@ class ResetsRequestState
         $pluginManager = PluginManager::instance();
 
         foreach ($pluginManager->getPlugins() as $identifier => $plugin) {
-            if (!$plugin instanceof ResetsWorkerState && !method_exists($plugin, 'resetWorkerState')) {
+            if (!is_object($plugin)
+                || (!$plugin instanceof ResetsWorkerState && !method_exists($plugin, 'resetWorkerState'))
+            ) {
                 continue;
             }
 

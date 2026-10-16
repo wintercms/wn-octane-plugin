@@ -1,0 +1,60 @@
+# Automated pull request review from a model called through OpenRouter.
+#
+# The review is posted as a COMMENT review by github-actions[bot]: it never approves or blocks a
+# pull request, and this check must never be made required. Each push rewrites the same review in
+# place, so the pull request carries one review that describes its current head.
+#
+# Pull requests from forks get no secrets, so for them the run skips with a notice.
+#
+# Configuration (Settings > Secrets and variables > Actions):
+#   secrets.CODE_REVIEW_KEY  OpenRouter API key (required)
+#   vars.REVIEW_MODEL        full OpenRouter model id (optional)
+#   vars.REVIEW_EFFORT       reasoning effort, for example low, medium or high (optional)
+
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, review_requested]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Taken from the base branch, so a pull request cannot change the standards it is reviewed
+      # against or the script that holds the key.
+      - name: Checkout the review script and standards (base branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            REVIEW.md
+            .github/scripts/code-review.js
+          sparse-checkout-cone-mode: false
+
+      - name: Skip when the base branch has no reviewer yet
+        if: hashFiles('.github/scripts/code-review.js', 'REVIEW.md') == ''
+        run: echo "::notice::The base branch has no code review script yet, so this pull request was not reviewed."
+
+      - name: Review
+        if: hashFiles('.github/scripts/code-review.js') != '' && hashFiles('REVIEW.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.CODE_REVIEW_KEY }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'openai/gpt-6.1-sol' }}
+          REVIEW_EFFORT: ${{ vars.REVIEW_EFFORT || 'medium' }}
+        with:
+          script: |
+            const run = require('./.github/scripts/code-review.js');
+            await run({ github, context, core });

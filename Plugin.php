@@ -95,7 +95,7 @@ class Plugin extends PluginBase
     }
 
     /**
-     * @return array
+     * @return array<string, string>
      */
     public function pluginDetails()
     {

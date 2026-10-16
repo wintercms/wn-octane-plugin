@@ -1,10 +1,13 @@
+includes:
+    - ../../../vendor/larastan/larastan/extension.neon
+
 parameters:
     paths:
         - Plugin.php
         - routes.php
         - classes
         - contracts
-    level: 5
+    level: 8
     bootstrapFiles:
         - phpstan-bootstrap.php
     scanDirectories:
@@ -12,3 +15,14 @@ parameters:
         - ../../../modules/backend
         - ../../../modules/cms
     treatPhpDocTypesAsCertain: false
+    ignoreErrors:
+        # WINTER_OCTANE_SMOKE is a process environment variable the smoke test sets for the server
+        # it starts, not a .env value, so it is read the same way whether or not config is cached.
+        -
+            identifier: larastan.noEnvCallsOutsideOfConfig
+            path: routes.php
+        # Matches core, which assigns Request::ip() (nullable) to this property in
+        # Winter\Storm\Auth\Manager::__construct(). Substituting a value would invent an address.
+        -
+            identifier: assign.propertyType
+            path: classes/ResolveAuthIpAddress.php
