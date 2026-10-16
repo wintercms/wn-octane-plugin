@@ -75,5 +75,7 @@ Run the tests, PHPCS and PHPStan before pushing.
 
 - Target `main`.
 - Describe what changed and why in a few sentences, then how it was tested.
-- The `Code Review` workflow posts an automated review from a model called through OpenRouter. It
-  never approves or blocks, and it skips pull requests from forks.
+- The `Code Review` workflow posts an automated review from a model called through OpenRouter: it
+  requests changes or approves. Do not merge while its latest review requests changes; fix the
+  finding and let it review again (request a review on the pull request to re-run it on an unchanged
+  head). It skips pull requests from forks.
