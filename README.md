@@ -18,7 +18,6 @@ This plugin:
 ## Requirements
 
 - Winter CMS 1.3 with [wintercms/storm#241](https://github.com/wintercms/storm/pull/241), which fixes event listeners registered against an interface. Octane uses one for its cleanup.
-- Recommended: the core fixes listed under [Related core fixes](#related-core-fixes).
 - PHP 8.1 or later
 - One of the application servers supported by Octane: FrankenPHP, Swoole or RoadRunner
 
@@ -78,16 +77,6 @@ Notes:
 - Do not put registrations behind `App::runningInBackend()` in `register()` or `boot()`. A worker runs those methods once, against a request that is not a back-end request, so anything behind that check is never registered. Registrations that only store a callback, such as navigation and settings, cost little, so make them unconditionally.
 
 Plugins that require this one can declare `implements \Winter\Octane\Contracts\ResetsWorkerState` for the compile-time check. PHP will not load a class that implements a missing interface, so plugins that also run without this plugin installed should define the method without implementing the interface.
-
-## Related core fixes
-
-These bugs also exist under PHP-FPM, but in a worker their effects last for every later request. Each fix is a separate pull request:
-
-- [wintercms/winter#1569](https://github.com/wintercms/winter/pull/1569): a template that fails to load leaves Twig's local file inclusion enabled. This plugin also closes it at the start of every operation.
-- [wintercms/winter#1570](https://github.com/wintercms/winter/pull/1570): after a page's PHP code changes, the rebuilt class never loads and the page fails with `Class "Cms...Class" not found` until the worker restarts.
-- [wintercms/storm#261](https://github.com/wintercms/storm/pull/261): an exception during `Auth\Manager::once()` leaves sessions disabled. This plugin also turns them back on at the start of every operation.
-- [wintercms/storm#262](https://github.com/wintercms/storm/pull/262): an exception from a static extension method leaves the called class set.
-- [wintercms/winter#1571](https://github.com/wintercms/winter/pull/1571): a page, layout or partial edited in the CMS keeps rendering its old content in a worker that already rendered it.
 
 ## Tests
 
