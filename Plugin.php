@@ -3,6 +3,7 @@
 use System\Classes\PluginBase;
 use Winter\Octane\Classes\ResetsRequestState;
 use Winter\Octane\Classes\ResolveAuthIpAddress;
+use Winter\Octane\Classes\ServePublicFiles;
 
 /**
  * Laravel Octane support for Winter CMS.
@@ -151,15 +152,18 @@ class Plugin extends PluginBase
         $this->app->register(\Laravel\Octane\OctaneServiceProvider::class);
 
         /*
-         * Replace Octane's octane:frankenphp with the plugin's, which defaults to a Caddyfile and a worker
-         * file that suit Winter's layout. Octane's command is mapped lazily through its #[AsCommand]
-         * attribute, while this subclass has none and is added directly, and Symfony checks directly added
-         * commands first, so this one answers to the name.
+         * Replace Octane's server commands with the plugin's. octane:frankenphp defaults to a Caddyfile and a
+         * worker file that suit Winter's layout, and octane:swoole and octane:roadrunner turn off the static
+         * file serving that would otherwise serve .env and the rest of the project root. Octane's commands
+         * are mapped lazily through their #[AsCommand] attributes, while these subclasses have none and are
+         * added directly, and Symfony checks directly added commands first, so these answer to the names.
          */
         if ($this->app->runningInConsole()) {
             $this->app->booted(function () {
                 \Illuminate\Console\Application::starting(function ($artisan) {
                     $artisan->resolve(\Winter\Octane\Console\StartFrankenPhpCommand::class);
+                    $artisan->resolve(\Winter\Octane\Console\StartRoadRunnerCommand::class);
+                    $artisan->resolve(\Winter\Octane\Console\StartSwooleCommand::class);
                 });
             });
         }
@@ -215,11 +219,14 @@ class Plugin extends PluginBase
         );
 
         /*
-         * Appended to the global stack, so it runs after the trusted-proxy middleware.
+         * ResolveAuthIpAddress is appended to the global stack, so it runs after the trusted-proxy
+         * middleware. ServePublicFiles is prepended, so a whitelisted file is returned before any other
+         * middleware runs, as it is when a web server serves it.
          */
         $kernel = $this->app->make(\Illuminate\Contracts\Http\Kernel::class);
 
         if ($kernel instanceof \Illuminate\Foundation\Http\Kernel) {
+            $kernel->prependMiddleware(ServePublicFiles::class);
             $kernel->pushMiddleware(ResolveAuthIpAddress::class);
         }
     }

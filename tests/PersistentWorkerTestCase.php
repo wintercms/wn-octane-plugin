@@ -89,13 +89,14 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
         \Winter\Storm\Halcyon\Model::setCacheManager(null);
 
         /*
-         * Same reasoning for the reset's own statics: the view-share baseline and the trait-user
-         * memo are per-worker in production, but PHPUnit rebuilds the application per test, and a
-         * baseline captured against a previous test's application would be restored into this
-         * one's view factory.
+         * Same reasoning for the reset's own statics: the view-share baseline, the boot-time state
+         * and the trait-user memo are per-worker in production, but PHPUnit rebuilds the application
+         * per test, and a baseline captured against a previous test's application would be restored
+         * into this one.
          */
         foreach ([
             'sharedViewBaseline' => null,
+            'bootState' => [],
             'traitUsers' => [],
             'examinedClassCount' => 0,
         ] as $property => $value) {
