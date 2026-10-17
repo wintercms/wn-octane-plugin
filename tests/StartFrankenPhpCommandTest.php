@@ -14,7 +14,7 @@ use Winter\Octane\Console\StartFrankenPhpCommand;
 
 /**
  * The plugin's octane:frankenphp defaults to a Caddyfile and a worker file that suit Winter's
- * layout, while still honouring an explicit --caddyfile.
+ * layout, while still honoring an explicit --caddyfile.
  */
 class StartFrankenPhpCommandTest extends PluginTestCase
 {
@@ -23,6 +23,12 @@ class StartFrankenPhpCommandTest extends PluginTestCase
      */
     protected string $worker = '';
 
+    /**
+     * Skips when laravel/octane is missing, and creates an empty temporary directory for the worker
+     * file.
+     *
+     * @return void
+     */
     public function setUp(): void
     {
         parent::setUp();
@@ -35,6 +41,11 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         mkdir(dirname($this->worker));
     }
 
+    /**
+     * Removes the temporary worker file and its directory.
+     *
+     * @return void
+     */
     public function tearDown(): void
     {
         if ($this->worker !== '') {
@@ -45,14 +56,24 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         parent::tearDown();
     }
 
-    public function testOctaneFrankenPhpResolvesToThePluginCommand()
+    /**
+     * The octane:frankenphp command name resolves to the plugin's command, not Octane's.
+     *
+     * @return void
+     */
+    public function testOctaneFrankenPhpResolvesToThePluginCommand(): void
     {
         $command = $this->app->make(Kernel::class)->all()['octane:frankenphp'];
 
         $this->assertInstanceOf(StartFrankenPhpCommand::class, $command);
     }
 
-    public function testDefaultsToThePluginCaddyfile()
+    /**
+     * Without --caddyfile, the command uses the Caddyfile that ships with the plugin.
+     *
+     * @return void
+     */
+    public function testDefaultsToThePluginCaddyfile(): void
     {
         $this->assertSame(
             realpath(dirname(__DIR__) . '/caddy/Caddyfile'),
@@ -60,7 +81,12 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         );
     }
 
-    public function testHonoursAnExplicitCaddyfile()
+    /**
+     * An explicit --caddyfile is used instead of the plugin's Caddyfile.
+     *
+     * @return void
+     */
+    public function testHonoursAnExplicitCaddyfile(): void
     {
         $custom = tempnam(sys_get_temp_dir(), 'caddy-');
 
@@ -72,13 +98,20 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         }
     }
 
-    public function testInstallsTheWinterWorkerOnlyWhenNoneExists()
+    /**
+     * The command writes the plugin's worker file when none exists, and keeps a site's own worker
+     * file on the next run.
+     *
+     * @return void
+     */
+    public function testInstallsTheWinterWorkerOnlyWhenNoneExists(): void
     {
         $this->makeCommand([])->ensureFrankenPhpWorkerIsInstalled();
 
         $this->assertFileEquals(dirname(__DIR__) . '/caddy/frankenphp-worker.php', $this->worker);
         $this->assertStringContainsString('/bootstrap/autoload.php', (string) file_get_contents($this->worker));
 
+        // Stand in for a worker file the site has customized.
         file_put_contents($this->worker, '<?php // site-specific');
         $this->makeCommand([])->ensureFrankenPhpWorkerIsInstalled();
 
@@ -89,7 +122,13 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         );
     }
 
-    public function testReplacesOctanesUnmodifiedWorkerStub()
+    /**
+     * An unmodified copy of Octane's worker stub is replaced with the plugin's worker file, since the
+     * stub does not load Winter's bootstrap.
+     *
+     * @return void
+     */
+    public function testReplacesOctanesUnmodifiedWorkerStub(): void
     {
         $stub = dirname((string) (new ReflectionClass(InstallsFrankenPhpDependencies::class))->getFileName())
             . '/../stubs/frankenphp-worker.php';
@@ -103,8 +142,10 @@ class StartFrankenPhpCommandTest extends PluginTestCase
     /**
      * Guards against the plugin's Caddyfile being replaced by a copy of Octane's stub. The E2E test
      * checks what the server actually serves.
+     *
+     * @return void
      */
-    public function testTheCaddyfileSendsEverythingButWhitelistedAssetsToTheWorker()
+    public function testTheCaddyfileSendsEverythingButWhitelistedAssetsToTheWorker(): void
     {
         $caddyfile = (string) file_get_contents(dirname(__DIR__) . '/caddy/Caddyfile');
 
@@ -113,10 +154,18 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         $this->assertStringNotContainsString('try_files {path}', $caddyfile, 'Octane\'s stub serves any existing file');
     }
 
-    public function testMonologRecordsArePrintedAndOtherLinesGoToOctane()
+    /**
+     * Monolog JSON records in the server's error output are printed unchanged, and every other line
+     * (Caddy's own log lines and plain text) is left for Octane to format.
+     *
+     * @return void
+     */
+    public function testMonologRecordsArePrintedAndOtherLinesGoToOctane(): void
     {
         $command = $this->makeCommand([]);
         $buffer = new BufferedOutput();
+
+        // Capture what the command prints directly, which is where a Monolog record goes.
         (fn () => $this->output = $buffer)->call($command);
 
         $caddy = '{"level":"error","logger":"http.log.access","msg":"handled request"}';
@@ -133,7 +182,13 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         $this->assertSame(implode("\n", [$caddy, 'plain text', $stream]), $errorOutput);
     }
 
-    public function testARecordSplitAcrossReadsIsPrintedOnceWhole()
+    /**
+     * A record that arrives across two reads is held until its line ends, then printed once, whole.
+     * A partial line still held when the server stops is passed to Octane.
+     *
+     * @return void
+     */
+    public function testARecordSplitAcrossReadsIsPrintedOnceWhole(): void
     {
         $command = $this->makeCommand([]);
         $buffer = new BufferedOutput();
@@ -149,13 +204,20 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         $this->assertSame('', $second[1]);
         $this->assertSame($record . "\n", $buffer->fetch());
 
+        // Hold a partial line, then stop the server: the held text must still reach Octane.
         $this->callGetServerOutput($command, $this->fakeServer('partial', true));
         $last = $this->callGetServerOutput($command, $this->fakeServer(' line', false));
 
         $this->assertSame('partial line', $last[1], 'a partial line left when the server stops goes to Octane');
     }
 
-    public function testOutputWrittenJustBeforeTheServerExitsCompletesAHeldRecord()
+    /**
+     * Error output read after the server has stopped is joined to the held half of a record, so the
+     * record is printed whole instead of being flushed as a fragment.
+     *
+     * @return void
+     */
+    public function testOutputWrittenJustBeforeTheServerExitsCompletesAHeldRecord(): void
     {
         $command = $this->makeCommand([]);
         $buffer = new BufferedOutput();
@@ -174,7 +236,13 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         $this->assertSame('', $last[1]);
     }
 
-    public function testOnlyMonologRecordsCountAsApplicationLogLines()
+    /**
+     * Only a JSON object with Monolog's message and level_name keys, and no Caddy msg key, counts as
+     * an application log line.
+     *
+     * @return void
+     */
+    public function testOnlyMonologRecordsCountAsApplicationLogLines(): void
     {
         $this->assertTrue(StartFrankenPhpCommand::isApplicationLogLine('{"message":"x","level_name":"ERROR"}'));
         $this->assertFalse(StartFrankenPhpCommand::isApplicationLogLine('{"level":"error","msg":"handled request"}'));
@@ -185,13 +253,26 @@ class StartFrankenPhpCommandTest extends PluginTestCase
     }
 
     /**
-     * @return array{0: string, 1: string}
+     * Calls the command's protected getServerOutput() against a fake server.
+     *
+     * @param \Winter\Octane\Console\StartFrankenPhpCommand $command
+     * @param \Symfony\Component\Process\Process $server
+     * @return array{0: string, 1: string} The output and the error output left for Octane.
      */
     protected function callGetServerOutput(StartFrankenPhpCommand $command, Process $server): array
     {
         return (fn () => $this->getServerOutput($server))->call($command);
     }
 
+    /**
+     * A stub server process that returns the given error output on the first read and
+     * $finalErrorOutput on the next one.
+     *
+     * @param string $errorOutput Error output for the first read.
+     * @param bool $running Whether the process reports itself as still running.
+     * @param string $finalErrorOutput Error output for the read made after the first.
+     * @return \Symfony\Component\Process\Process
+     */
     protected function fakeServer(string $errorOutput, bool $running, string $finalErrorOutput = ''): Process
     {
         $server = $this->createStub(Process::class);
@@ -205,16 +286,28 @@ class StartFrankenPhpCommandTest extends PluginTestCase
     }
 
     /**
+     * Builds the plugin's command with the given options, writing its worker file to the test's
+     * temporary path instead of the site root.
+     *
      * @param array<string, string> $options
+     * @return \Winter\Octane\Console\StartFrankenPhpCommand
      */
     protected function makeCommand(array $options): StartFrankenPhpCommand
     {
         $command = new class ($this->worker) extends StartFrankenPhpCommand {
+            /**
+             * @param string $testWorkerPath Where the worker file is written.
+             */
             public function __construct(protected string $testWorkerPath)
             {
                 parent::__construct();
             }
 
+            /**
+             * Points the command at the test's temporary worker file.
+             *
+             * @return string
+             */
             protected function workerPath(): string
             {
                 return $this->testWorkerPath;
@@ -227,7 +320,10 @@ class StartFrankenPhpCommandTest extends PluginTestCase
     }
 
     /**
+     * Calls the command's protected configPath() with the given options.
+     *
      * @param array<string, string> $options
+     * @return string The Caddyfile path the command would use.
      */
     protected function callConfigPath(array $options): string
     {

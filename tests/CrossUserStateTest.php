@@ -25,6 +25,8 @@ class CrossUserStateTest extends PersistentWorkerTestCase
      * module providers resolve these managers while registering, so they live on the container every
      * request sandbox is cloned from and flushing the sandbox cannot discard them. A manager first
      * resolved inside a sandbox would be discarded with it, which would mask the defect.
+     *
+     * @return \Illuminate\Foundation\Application
      */
     protected function bootWorker(): \Illuminate\Foundation\Application
     {
@@ -41,7 +43,14 @@ class CrossUserStateTest extends PersistentWorkerTestCase
         return $app;
     }
 
-    protected function readProtected(object $target, string $property)
+    /**
+     * Reads a property the object does not expose.
+     *
+     * @param object $target
+     * @param string $property
+     * @return mixed
+     */
+    protected function readProtected(object $target, string $property): mixed
     {
         $prop = (new \ReflectionObject($target))->getProperty($property);
         $prop->setAccessible(true);
@@ -51,8 +60,10 @@ class CrossUserStateTest extends PersistentWorkerTestCase
 
     /**
      * loadItems() stores the permission-filtered menu, and only rebuilds it when it is null.
+     *
+     * @return void
      */
-    public function testNavigationItemsAreRebuiltForEachRequest()
+    public function testNavigationItemsAreRebuiltForEachRequest(): void
     {
         $seen = [];
 
@@ -79,7 +90,12 @@ class CrossUserStateTest extends PersistentWorkerTestCase
         $this->assertNull($seen[1], 'a filtered navigation list must not be reused for the next user');
     }
 
-    public function testNavigationContextDoesNotCrossRequests()
+    /**
+     * The active navigation context set during one request is cleared before the next.
+     *
+     * @return void
+     */
+    public function testNavigationContextDoesNotCrossRequests(): void
     {
         $seen = [];
 
@@ -107,8 +123,10 @@ class CrossUserStateTest extends PersistentWorkerTestCase
     /**
      * listReportWidgets() unsets entries the current user cannot access directly from the cached
      * list, so a user without permission removed the widget for everyone the worker served next.
+     *
+     * @return void
      */
-    public function testReportWidgetsAreRebuiltForEachRequest()
+    public function testReportWidgetsAreRebuiltForEachRequest(): void
     {
         $seen = [];
 
@@ -137,8 +155,10 @@ class CrossUserStateTest extends PersistentWorkerTestCase
     /**
      * Registration data is built once per worker; discarding it would leave the worker with no
      * navigation or widgets at all, which is worse than serving stale ones.
+     *
+     * @return void
      */
-    public function testRegistrationDataSurvivesTheReset()
+    public function testRegistrationDataSurvivesTheReset(): void
     {
         $navigationCallbacks = null;
         $widgetCallbacks = null;
@@ -180,7 +200,12 @@ class CrossUserStateTest extends PersistentWorkerTestCase
         );
     }
 
-    public function testSettingsItemsAreRebuiltForEachRequest()
+    /**
+     * The settings manager's permission-filtered item list is rebuilt for each request.
+     *
+     * @return void
+     */
+    public function testSettingsItemsAreRebuiltForEachRequest(): void
     {
         $seen = [];
 
@@ -190,6 +215,8 @@ class CrossUserStateTest extends PersistentWorkerTestCase
             $prop->setAccessible(true);
 
             $seen[] = $prop->getValue($manager);
+
+            // Stand in for the filtered result a real request would cache.
             $prop->setValue($manager, ['left-over']);
 
             return 'ok';
@@ -206,8 +233,10 @@ class CrossUserStateTest extends PersistentWorkerTestCase
 
     /**
      * Backend dispatch writes the resolved action and parameters onto the controller class itself.
+     *
+     * @return void
      */
-    public function testBackendControllerActionStateDoesNotCrossRequests()
+    public function testBackendControllerActionStateDoesNotCrossRequests(): void
     {
         $seen = [];
 

@@ -50,6 +50,11 @@ class FrankenPhpSmokeTest extends TestCase
      */
     protected ?string $movedWorker = null;
 
+    /**
+     * Skips unless the test is opted in and a configured Winter installation surrounds the plugin.
+     *
+     * @return void
+     */
     public function setUp(): void
     {
         parent::setUp();
@@ -65,6 +70,11 @@ class FrankenPhpSmokeTest extends TestCase
         }
     }
 
+    /**
+     * Stops the server and puts back any worker file the test moved aside.
+     *
+     * @return void
+     */
     public function tearDown(): void
     {
         $this->stopServer();
@@ -73,7 +83,12 @@ class FrankenPhpSmokeTest extends TestCase
         parent::tearDown();
     }
 
-    public function testStatePlantedByOneRequestIsGoneByTheNext()
+    /**
+     * State planted by one HTTP request is gone when the same worker process serves the next one.
+     *
+     * @return void
+     */
+    public function testStatePlantedByOneRequestIsGoneByTheNext(): void
     {
         $this->startServer();
 
@@ -112,8 +127,10 @@ class FrankenPhpSmokeTest extends TestCase
     /**
      * Winter serves from the project root, so the server must only serve Winter's whitelisted asset
      * paths as files. Octane's own Caddyfile served any file and ran any PHP file in the project.
+     *
+     * @return void
      */
-    public function testOnlyWhitelistedFilesAreServed()
+    public function testOnlyWhitelistedFilesAreServed(): void
     {
         $this->startServer();
 
@@ -151,6 +168,8 @@ class FrankenPhpSmokeTest extends TestCase
 
     /**
      * Start octane:start with a single FrankenPHP worker and wait until it accepts connections.
+     *
+     * @return void
      */
     protected function startServer(): void
     {
@@ -239,6 +258,8 @@ class FrankenPhpSmokeTest extends TestCase
 
     /**
      * Stop the server, politely first, then by port as a backstop for orphaned children.
+     *
+     * @return void
      */
     protected function stopServer(): void
     {
@@ -265,7 +286,7 @@ class FrankenPhpSmokeTest extends TestCase
      * Fetch a smoke route and decode its JSON.
      *
      * @param string $path
-     * @return array
+     * @return array<string, mixed>
      */
     protected function get(string $path): array
     {
@@ -297,6 +318,8 @@ class FrankenPhpSmokeTest extends TestCase
      * The command keeps any existing worker file except Octane's unmodified stub. A file from an
      * earlier version of the README skips Winter's bootstrap/autoload.php, which lets Laravel's helpers
      * replace Winter's, so the server would not start.
+     *
+     * @return void
      */
     protected function ensureWorkerStubSuitsWinter(): void
     {
@@ -310,6 +333,8 @@ class FrankenPhpSmokeTest extends TestCase
 
     /**
      * Put back the worker file ensureWorkerStubSuitsWinter() moved aside.
+     *
+     * @return void
      */
     protected function restoreWorker(): void
     {
@@ -370,6 +395,8 @@ class FrankenPhpSmokeTest extends TestCase
     }
 
     /**
+     * Asks the operating system for a port no other process is listening on.
+     *
      * @return int A currently free TCP port.
      */
     protected function findFreePort(): int
@@ -382,6 +409,8 @@ class FrankenPhpSmokeTest extends TestCase
     }
 
     /**
+     * Reads the end of the server log, to attach to a failure or skip message.
+     *
      * @return string The last portion of the server log, for diagnostics.
      */
     protected function logTail(): string
