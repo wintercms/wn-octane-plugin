@@ -7,6 +7,8 @@ use Laravel\Octane\Commands\Concerns\InstallsFrankenPhpDependencies;
 use Laravel\Octane\Commands\StartFrankenPhpCommand as OctaneStartFrankenPhpCommand;
 use ReflectionClass;
 use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Process\Process;
 use System\Tests\Bootstrap\PluginTestCase;
 use Winter\Octane\Console\StartFrankenPhpCommand;
 
@@ -109,6 +111,97 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         $this->assertStringContainsString('rewrite * /frankenphp-worker.php', $caddyfile);
         $this->assertStringContainsString('file_server off', $caddyfile);
         $this->assertStringNotContainsString('try_files {path}', $caddyfile, 'Octane\'s stub serves any existing file');
+    }
+
+    public function testMonologRecordsArePrintedAndOtherLinesGoToOctane()
+    {
+        $command = $this->makeCommand([]);
+        $buffer = new BufferedOutput();
+        (fn () => $this->output = $buffer)->call($command);
+
+        $caddy = '{"level":"error","logger":"http.log.access","msg":"handled request"}';
+        $record = '{"message":"Import failed","context":{},"level":400,"level_name":"ERROR","channel":"prod"}';
+        $stream = '{"level":"error","msg":"{\\"type\\":\\"shutdown\\"}"}';
+
+        [$output, $errorOutput] = $this->callGetServerOutput(
+            $command,
+            $this->fakeServer(implode("\n", [$caddy, $record, 'plain text', $stream]), false)
+        );
+
+        $this->assertSame($record . "\n", $buffer->fetch());
+        $this->assertSame('stdout text', $output);
+        $this->assertSame(implode("\n", [$caddy, 'plain text', $stream]), $errorOutput);
+    }
+
+    public function testARecordSplitAcrossReadsIsPrintedOnceWhole()
+    {
+        $command = $this->makeCommand([]);
+        $buffer = new BufferedOutput();
+        (fn () => $this->output = $buffer)->call($command);
+
+        $record = '{"message":"Import failed","context":{},"level":400,"level_name":"ERROR","channel":"prod"}';
+        $half = intdiv(strlen($record), 2);
+
+        $first = $this->callGetServerOutput($command, $this->fakeServer(substr($record, 0, $half), true));
+        $second = $this->callGetServerOutput($command, $this->fakeServer(substr($record, $half) . "\n", true));
+
+        $this->assertSame('', $first[1]);
+        $this->assertSame('', $second[1]);
+        $this->assertSame($record . "\n", $buffer->fetch());
+
+        $this->callGetServerOutput($command, $this->fakeServer('partial', true));
+        $last = $this->callGetServerOutput($command, $this->fakeServer(' line', false));
+
+        $this->assertSame('partial line', $last[1], 'a partial line left when the server stops goes to Octane');
+    }
+
+    public function testOutputWrittenJustBeforeTheServerExitsCompletesAHeldRecord()
+    {
+        $command = $this->makeCommand([]);
+        $buffer = new BufferedOutput();
+        (fn () => $this->output = $buffer)->call($command);
+
+        $record = '{"message":"Shutdown failed","context":{},"level":400,"level_name":"ERROR","channel":"prod"}';
+        $half = intdiv(strlen($record), 2);
+
+        $this->callGetServerOutput($command, $this->fakeServer(substr($record, 0, $half), true));
+        $last = $this->callGetServerOutput(
+            $command,
+            $this->fakeServer('', false, substr($record, $half) . "\n")
+        );
+
+        $this->assertSame($record . "\n", $buffer->fetch());
+        $this->assertSame('', $last[1]);
+    }
+
+    public function testOnlyMonologRecordsCountAsApplicationLogLines()
+    {
+        $this->assertTrue(StartFrankenPhpCommand::isApplicationLogLine('{"message":"x","level_name":"ERROR"}'));
+        $this->assertFalse(StartFrankenPhpCommand::isApplicationLogLine('{"level":"error","msg":"handled request"}'));
+        $this->assertFalse(StartFrankenPhpCommand::isApplicationLogLine('{"message":"x","level_name":"ERROR","msg":"y"}'));
+        $this->assertFalse(StartFrankenPhpCommand::isApplicationLogLine('{"message":"no level"}'));
+        $this->assertFalse(StartFrankenPhpCommand::isApplicationLogLine('plain text'));
+        $this->assertFalse(StartFrankenPhpCommand::isApplicationLogLine(''));
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    protected function callGetServerOutput(StartFrankenPhpCommand $command, Process $server): array
+    {
+        return (fn () => $this->getServerOutput($server))->call($command);
+    }
+
+    protected function fakeServer(string $errorOutput, bool $running, string $finalErrorOutput = ''): Process
+    {
+        $server = $this->createStub(Process::class);
+        $server->method('isRunning')->willReturn($running);
+        $server->method('getIncrementalOutput')->willReturnOnConsecutiveCalls('stdout text', '');
+        $server->method('getIncrementalErrorOutput')->willReturnOnConsecutiveCalls($errorOutput, $finalErrorOutput);
+        $server->method('clearOutput')->willReturnSelf();
+        $server->method('clearErrorOutput')->willReturnSelf();
+
+        return $server;
     }
 
     /**

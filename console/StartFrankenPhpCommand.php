@@ -12,9 +12,19 @@ use ReflectionClass;
  * .env and the logs as files, and execute any PHP file in the project directly. Octane's worker
  * stub also looks for the application one directory above the web root. This command uses the
  * plugin's Caddyfile unless --caddyfile is given, and installs a worker file with Winter's paths.
+ *
+ * Octane also reads each line FrankenPHP writes to stderr as a Caddy log entry and prints its
+ * "msg" field. An application that logs to stderr through Monolog's JsonFormatter writes records
+ * with a "message" field instead, which Octane printed as "unknown error". This command prints
+ * those records unchanged and leaves every other line to Octane.
  */
 class StartFrankenPhpCommand extends OctaneStartFrankenPhpCommand
 {
+    /**
+     * @var string Error output after the last newline, held until the rest of that line arrives.
+     */
+    protected string $pendingErrorOutput = '';
+
     /**
      * Install the plugin's worker file when there is none, or when the existing one is Octane's
      * unmodified stub (written by octane:install), which cannot boot Winter.
@@ -33,6 +43,22 @@ class StartFrankenPhpCommand extends OctaneStartFrankenPhpCommand
     }
 
     /**
+     * Determine whether a stderr line is a Monolog JSON record rather than a Caddy or Octane message.
+     *
+     * @param string $line
+     * @return bool
+     */
+    public static function isApplicationLogLine(string $line): bool
+    {
+        $record = json_decode($line, true);
+
+        return is_array($record)
+            && !array_key_exists('msg', $record)
+            && array_key_exists('message', $record)
+            && array_key_exists('level_name', $record);
+    }
+
+    /**
      * @return string
      */
     protected function configPath()
@@ -42,6 +68,56 @@ class StartFrankenPhpCommand extends OctaneStartFrankenPhpCommand
         }
 
         return parent::configPath();
+    }
+
+    /**
+     * Return the server's new output, after printing the Monolog records in its error output.
+     *
+     * Octane reads the pipe without waiting, so a long record can arrive in two reads. An
+     * unfinished last line is held back until the rest of it arrives, or until the server stops.
+     *
+     * @param \Symfony\Component\Process\Process $server
+     * @return array{0: string, 1: string}
+     */
+    protected function getServerOutput($server)
+    {
+        [$output, $errorOutput] = parent::getServerOutput($server);
+        $running = $server->isRunning();
+
+        // Checking the status reads the pipes once more, so output written just before the exit is read here.
+        if (!$running) {
+            [$finalOutput, $finalErrorOutput] = parent::getServerOutput($server);
+            $output .= $finalOutput;
+            $errorOutput .= $finalErrorOutput;
+        }
+
+        $text = $this->pendingErrorOutput . $errorOutput;
+        $cut = strrpos($text, "\n");
+
+        if ($running && $cut !== false) {
+            $this->pendingErrorOutput = substr($text, $cut + 1);
+            $text = substr($text, 0, $cut);
+        }
+        elseif ($running) {
+            $this->pendingErrorOutput = $text;
+            $text = '';
+        }
+        else {
+            $this->pendingErrorOutput = '';
+        }
+
+        $serverLines = [];
+
+        foreach (explode("\n", $text) as $line) {
+            if (static::isApplicationLogLine($line)) {
+                $this->raw($line);
+            }
+            else {
+                $serverLines[] = $line;
+            }
+        }
+
+        return [$output, implode("\n", $serverLines)];
     }
 
     protected function isOctaneWorkerStub(string $worker): bool
