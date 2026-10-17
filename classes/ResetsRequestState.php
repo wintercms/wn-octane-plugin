@@ -95,6 +95,9 @@ class ResetsRequestState
             fn () => $this->resetCoreState(),
             fn () => $this->resetManagers($base, $sandbox),
             fn () => $this->resetStaticCaches(),
+            fn () => $this->restoreMassAssignmentGuard(),
+            fn () => $this->restoreExceptionRenderListeners($base),
+            fn () => $this->restoreYamlProcessor($base),
             fn () => $this->resetSharedViewData($base, $sandbox),
             fn () => $this->rollBackTransactions($base, $sandbox),
             fn () => $this->flushRouteController($sandbox),
@@ -702,6 +705,146 @@ class ResetsRequestState
             }
 
             $reflected->setValue(null, $value);
+        }
+    }
+
+    /**
+     * State recorded the first time the reset sees it, before any request code has run, keyed by
+     * the reset step that restores it. A missing key means the step has not recorded its state yet.
+     *
+     * @var array<string, mixed>
+     */
+    protected static array $bootState = [];
+
+    /**
+     * The event whose listeners restoreExceptionRenderListeners() restores.
+     */
+    protected const EXCEPTION_RENDER_EVENT = 'exception.beforeRender';
+
+    /**
+     * Put Eloquent's mass-assignment protection back to its boot-time state.
+     *
+     * Storm's Updater turns the protection off around each migration and seeder, and turns it back
+     * on only when the script returns, so a migration that throws leaves every model in the worker
+     * open to mass assignment. The boot-time state is restored rather than "guarded", so a site that
+     * unguards its models while booting keeps the behavior it has under PHP-FPM.
+     *
+     * @return void
+     */
+    protected function restoreMassAssignmentGuard(): void
+    {
+        if (!array_key_exists('unguarded', static::$bootState)) {
+            static::$bootState['unguarded'] = \Illuminate\Database\Eloquent\Model::isUnguarded();
+
+            return;
+        }
+
+        \Illuminate\Database\Eloquent\Model::unguard((bool) static::$bootState['unguarded']);
+    }
+
+    /**
+     * Put the exception.beforeRender listeners back to the ones registered while the worker booted.
+     *
+     * BackendController::run() adds a listener to this event on every back-end request, so that an
+     * abort(404) or abort(403) inside a back-end controller renders the back-end's error page. Under
+     * PHP-FPM the listener dies with the request. The dispatcher lives in the base container, so in
+     * a worker the listeners pile up, one per back-end request, each holding its controller, and a
+     * stale one renders the back-end's access denied page for a later front-end 403. Restoring the
+     * boot-time listeners at the start of each operation leaves the current request's own listener
+     * in place for that request.
+     *
+     * A listener a plugin adds to this event during a request lasts for that request only, as under
+     * PHP-FPM. One added once per worker, after boot, has to be added while booting instead.
+     *
+     * @param \Illuminate\Foundation\Application|null $base
+     * @return void
+     */
+    protected function restoreExceptionRenderListeners($base): void
+    {
+        if ($base === null || !$base->resolved('events')) {
+            return;
+        }
+
+        $events = $base->make('events');
+
+        if (!$events instanceof \Winter\Storm\Events\Dispatcher
+            || !property_exists(\Illuminate\Events\Dispatcher::class, 'listeners')
+            || !property_exists(\Winter\Storm\Events\Dispatcher::class, 'sorted')
+        ) {
+            $this->warnOnce('Winter.Octane: the event dispatcher is not a Storm dispatcher with $listeners and $sorted properties, so the exception.beforeRender listeners added by back-end requests are not removed between requests.');
+
+            return;
+        }
+
+        $listeners = new \ReflectionProperty(\Illuminate\Events\Dispatcher::class, 'listeners');
+        $all = $listeners->getValue($events);
+        $current = $all[static::EXCEPTION_RENDER_EVENT] ?? null;
+
+        if (!array_key_exists('exceptionRenderListeners', static::$bootState)) {
+            static::$bootState['exceptionRenderListeners'] = $current;
+
+            return;
+        }
+
+        $baseline = static::$bootState['exceptionRenderListeners'];
+
+        if ($current === $baseline) {
+            return;
+        }
+
+        if ($baseline === null) {
+            unset($all[static::EXCEPTION_RENDER_EVENT]);
+        }
+        else {
+            $all[static::EXCEPTION_RENDER_EVENT] = $baseline;
+        }
+
+        $listeners->setValue($events, $all);
+
+        // Storm caches the listeners sorted by priority, and would keep dispatching the stale list.
+        $sorted = new \ReflectionProperty(\Winter\Storm\Events\Dispatcher::class, 'sorted');
+        $cache = $sorted->getValue($events);
+        unset($cache[static::EXCEPTION_RENDER_EVENT]);
+        $sorted->setValue($events, $cache);
+    }
+
+    /**
+     * Put the YAML parser's processor back to its boot-time value.
+     *
+     * Yaml::withProcessor() swaps the processor on the shared parser for the length of a callback,
+     * and does not swap it back when the callback throws. A worker resolves the parser into the base
+     * container while it boots, so a failed version.yaml parse would leave VersionYamlProcessor in
+     * place, and every later parse in the worker would be run through it. Only a parser in the base
+     * container outlives an operation, so one that only a sandbox resolved is left alone.
+     *
+     * @param \Illuminate\Foundation\Application|null $base
+     * @return void
+     */
+    protected function restoreYamlProcessor($base): void
+    {
+        if ($base === null || !$base->resolved('parse.yaml')) {
+            return;
+        }
+
+        $yaml = $base->make('parse.yaml');
+
+        if (!$yaml instanceof \Winter\Storm\Parse\Yaml || !property_exists(\Winter\Storm\Parse\Yaml::class, 'processor')) {
+            $this->warnOnce('Winter.Octane: the YAML parser has no $processor property, so a processor left by a failed parse is not removed between requests.');
+
+            return;
+        }
+
+        $processor = new \ReflectionProperty(\Winter\Storm\Parse\Yaml::class, 'processor');
+        $current = $processor->getValue($yaml);
+
+        if (!array_key_exists('yamlProcessor', static::$bootState)) {
+            static::$bootState['yamlProcessor'] = $current;
+
+            return;
+        }
+
+        if ($current !== static::$bootState['yamlProcessor']) {
+            $processor->setValue($yaml, static::$bootState['yamlProcessor']);
         }
     }
 

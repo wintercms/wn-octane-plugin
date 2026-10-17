@@ -64,6 +64,10 @@ class BaseContainerDiscoveryTest extends PersistentWorkerTestCase
         'db.dongle' => 'the database driver helper',
         'validation.presence' => 'the database presence verifier; the validator sets its connection each time it uses it',
 
+        // State that this plugin puts back to its boot-time value at the start of each operation.
+        'events' => 'the listeners registered at boot; BackendController::run() adds an exception.beforeRender listener on every back-end request, and ResetsRequestState restores that event\'s listeners to the boot-time set',
+        'parse.yaml' => 'the YAML parser; ResetsRequestState restores its processor to the boot-time one, since Yaml::withProcessor() leaves its processor in place when the callback throws',
+
         // State that is cleared per operation by something other than this plugin.
         'Illuminate\Foundation\Exceptions\Renderer\Listener' => 'the queries shown on the debug error page; Laravel clears them at every Octane operation, because the octane:start commands set LARAVEL_OCTANE',
         'halcyon' => 'the theme datasources; Theme::load() registers them again on each request, after the reset clears the theme cache',
@@ -85,10 +89,7 @@ class BaseContainerDiscoveryTest extends PersistentWorkerTestCase
      *
      * @var array<string, string>
      */
-    protected const KNOWN_LEAKS = [
-        'events' => 'BackendController::run() adds an exception.beforeRender listener on every back-end request, and nothing removes it, so the listeners and their controllers pile up and a stale one can render a back-end error page for a later front-end request',
-        'parse.yaml' => 'Yaml::withProcessor() does not restore the processor when its callback throws, so a failed parse leaves the swapped processor in place for every later parse',
-    ];
+    protected const KNOWN_LEAKS = [];
 
     /**
      * Builds the application the way Octane's ApplicationFactory builds a worker's, with this plugin
