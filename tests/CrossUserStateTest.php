@@ -188,6 +188,7 @@ class CrossUserStateTest extends PersistentWorkerTestCase
         );
 
         $this->assertGreaterThan(0, $navigationBefore);
+        $this->assertGreaterThan(0, $widgetsBefore);
         $this->assertSame(
             $navigationBefore,
             $navigationCallbacks,
