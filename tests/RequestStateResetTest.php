@@ -482,6 +482,39 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     }
 
     /**
+     * A plugin can give Halcyon\Model its own cache manager. The application's cache manager is
+     * still a MemoryCacheManager held for the life of the worker, so its in-memory values must not
+     * reach the next request either.
+     */
+    public function testApplicationCacheMemoryDoesNotCrossRequestsWhenHalcyonUsesAnotherManager()
+    {
+        $seen = [];
+
+        $this->addWorkerRoute('_worker/app-cache-set', function () {
+            \Winter\Storm\Halcyon\Model::setCacheManager(new \Winter\Storm\Halcyon\MemoryCacheManager(app()));
+            $store = app('cache')->store('file');
+            $store->putInMemoryCache('worker-test-key', 'cached');
+
+            return 'set';
+        });
+
+        $this->addWorkerRoute('_worker/app-cache-read', function () use (&$seen) {
+            $store = app('cache')->store('file');
+            $seen[] = (new \ReflectionProperty($store, 'cache'))->getValue($store);
+
+            return 'read';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/app-cache-set', 'GET'),
+            Request::create('/_worker/app-cache-read', 'GET')
+        );
+
+        $this->assertCount(1, $seen);
+        $this->assertArrayNotHasKey('worker-test-key', $seen[0]);
+    }
+
+    /**
      * An unbalanced mask left by a throwing request would otherwise be applied to the next
      * request's exception.
      */

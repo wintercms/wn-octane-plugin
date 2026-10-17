@@ -198,36 +198,52 @@ class ResetsRequestState
     }
 
     /**
-     * Empty Halcyon's in-memory record cache on every store the cache manager has resolved.
+     * Empty Halcyon's in-memory record cache on every store the cache managers have resolved.
      *
-     * The cache manager is held statically, so it outlives an operation. Only the in-memory layer is
-     * cleared; the external stores it wraps keep their own invalidation rules.
+     * Halcyon makes the application's cache manager a MemoryCacheManager and hands the same object
+     * to Halcyon\Model. Both are held for the life of the worker. A plugin may give Halcyon\Model a
+     * different manager, which leaves the application's own stores holding every value they read,
+     * so both managers are flushed. Only the in-memory layer is cleared; the external stores they
+     * wrap keep their own invalidation rules.
      *
      * @return void
      */
     protected function flushHalcyonRequestCache(): void
     {
-        if (!property_exists(HalcyonModel::class, 'cache')) {
+        $managers = [];
+
+        if (property_exists(HalcyonModel::class, 'cache')) {
+            $managers[] = (new \ReflectionProperty(HalcyonModel::class, 'cache'))->getValue();
+        }
+        else {
             $this->warnOnce('Winter.Octane: Halcyon\\Model::$cache no longer exists, so the Halcyon request cache is not reset between requests.');
-
-            return;
         }
 
-        $manager = (new \ReflectionProperty(HalcyonModel::class, 'cache'))->getValue();
+        $container = \Illuminate\Container\Container::getInstance();
 
-        if (!$manager instanceof MemoryCacheManager) {
-            return;
+        if ($container->resolved('cache')) {
+            $managers[] = $container->make('cache');
         }
 
-        if (!(new \ReflectionObject($manager))->hasProperty('stores')) {
-            $this->warnOnce('Winter.Octane: the Halcyon cache manager has no $stores property, so the Halcyon request cache is not reset between requests.');
+        $flushed = [];
 
-            return;
-        }
+        foreach ($managers as $manager) {
+            if (!$manager instanceof MemoryCacheManager || isset($flushed[spl_object_id($manager)])) {
+                continue;
+            }
 
-        foreach ((new \ReflectionProperty($manager, 'stores'))->getValue($manager) as $store) {
-            if ($store instanceof MemoryRepository) {
-                $store->flushInternalCache();
+            $flushed[spl_object_id($manager)] = true;
+
+            if (!(new \ReflectionObject($manager))->hasProperty('stores')) {
+                $this->warnOnce('Winter.Octane: the Halcyon cache manager has no $stores property, so the Halcyon request cache is not reset between requests.');
+
+                return;
+            }
+
+            foreach ((new \ReflectionProperty($manager, 'stores'))->getValue($manager) as $store) {
+                if ($store instanceof MemoryRepository) {
+                    $store->flushInternalCache();
+                }
             }
         }
     }
