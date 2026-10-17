@@ -11,12 +11,6 @@ use Backend\Classes\AuthManager;
 use Winter\Storm\Exception\ErrorHandler;
 
 /**
- * State produced by one operation must not be visible to the next.
- *
- * These run through Octane's real ApplicationGateway against a single application instance, so a
- * leak here is the same leak a worker would exhibit in production.
- */
-/**
  * Stands in for a plugin's auth manager, such as Winter.User's front-end one, that this plugin cannot
  * list by name.
  */
@@ -24,9 +18,20 @@ class FrontEndAuthManager extends \Winter\Storm\Auth\Manager
 {
 }
 
+/**
+ * State produced by one operation must not be visible to the next.
+ *
+ * These run through Octane's real ApplicationGateway against a single application instance, so a
+ * leak here is the same leak a worker would exhibit in production.
+ */
 class RequestStateResetTest extends PersistentWorkerTestCase
 {
-    public function testTheWorkerServesSeveralRequestsFromOneApplication()
+    /**
+     * One booted worker serves several requests in a row, each with a normal response.
+     *
+     * @return void
+     */
+    public function testTheWorkerServesSeveralRequestsFromOneApplication(): void
     {
         $this->addWorkerRoute('_worker/ok', fn () => 'ok');
 
@@ -41,8 +46,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
 
     /**
      * Each operation gets its own sandbox, and the base application is restored afterwards.
+     *
+     * @return void
      */
-    public function testEachOperationRunsInItsOwnSandbox()
+    public function testEachOperationRunsInItsOwnSandbox(): void
     {
         $seen = [];
 
@@ -69,8 +76,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     /**
      * The execution context is derived from the request path and cached as a singleton, so without
      * a reset the first request a worker serves decides it for every later request.
+     *
+     * @return void
      */
-    public function testExecutionContextIsRederivedForEachRequest()
+    public function testExecutionContextIsRederivedForEachRequest(): void
     {
         $contexts = [];
 
@@ -104,12 +113,14 @@ class RequestStateResetTest extends PersistentWorkerTestCase
      * The reset must run no matter what other listeners do.
      *
      * The dispatcher stops propagation when a listener returns false, but Octane's
-     * ApplicationGateway ignores that return value and proceeds into the kernel anyway — so a
+     * ApplicationGateway ignores that return value and proceeds into the kernel anyway, so a
      * reset listener that ran later in the chain could be silently skipped for an operation that
      * is still served. The reset is therefore attached at the highest priority, ahead of anything
      * attached at a normal one.
+     *
+     * @return void
      */
-    public function testTheResetCannotBeSkippedByAHaltingListener()
+    public function testTheResetCannotBeSkippedByAHaltingListener(): void
     {
         $app = $this->bootWorker();
 
@@ -130,9 +141,11 @@ class RequestStateResetTest extends PersistentWorkerTestCase
             /**
              * @var int Number of times the reset reached this plugin.
              */
-            public $resets = 0;
+            public int $resets = 0;
 
             /**
+             * Counts each time the reset reaches this plugin.
+             *
              * @return void
              */
             public function resetWorkerState(): void
@@ -161,10 +174,12 @@ class RequestStateResetTest extends PersistentWorkerTestCase
      * The second half is the regression that matters: the reset restores the view factory's
      * boot-time shared data, and Octane's GiveNewApplicationInstanceToViewFactory injects the
      * CURRENT sandbox into shared['app'] on every operation. If the reset ran after Octane's
-     * listeners, its baseline would capture the first operation's sandbox — a dead object once
-     * that operation's sandbox is flushed — and replay it into every later render.
+     * listeners, its baseline would capture the first operation's sandbox (a dead object once
+     * that operation's sandbox is flushed) and replay it into every later render.
+     *
+     * @return void
      */
-    public function testViewSharesResetToBootStateAndOctaneReinjectsLiveObjects()
+    public function testViewSharesResetToBootStateAndOctaneReinjectsLiveObjects(): void
     {
         $this->bootWorker();
 
@@ -208,8 +223,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
      * Dropping keys added since boot is not enough. A multi-site plugin overwriting a boot-time
      * key per request (a site-specific app name, say) leaves the key present, so a keys-only
      * cleanup keeps the previous request's VALUE. The reset restores the boot-time value itself.
+     *
+     * @return void
      */
-    public function testOverwritingABootTimeShareDoesNotLeakIntoTheNextRequest()
+    public function testOverwritingABootTimeShareDoesNotLeakIntoTheNextRequest(): void
     {
         $app = $this->bootWorker();
 
@@ -248,8 +265,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     /**
      * The auth manager is resolved into the base container at boot, so the sandbox never discards
      * it and a resolved user would otherwise be visible to the next request.
+     *
+     * @return void
      */
-    public function testAuthenticationStateDoesNotCrossRequests()
+    public function testAuthenticationStateDoesNotCrossRequests(): void
     {
         $seen = [];
 
@@ -283,16 +302,16 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     }
 
     /**
-     * The auth manager captures the client address once, at construction. Each HTTP request must
-     * record its own, or login throttling is scoped to the first request's address.
-     */
-    /**
      * The reset clears the address on every auth manager, so the middleware must record it again on
      * every one, or a front-end manager throttles all clients as one address.
+     *
+     * @return void
      */
-    public function testEveryStormAuthManagerRecordsEachRequestsClientAddress()
+    public function testEveryStormAuthManagerRecordsEachRequestsClientAddress(): void
     {
         $this->bootWorker();
+
+        // Resolve the manager before the requests, as a plugin would, so it outlives each sandbox.
         FrontEndAuthManager::instance();
         $seen = [];
 
@@ -309,7 +328,14 @@ class RequestStateResetTest extends PersistentWorkerTestCase
 
         $this->assertSame(['10.0.0.1', '10.0.0.2'], $seen);
     }
-    public function testTheAuthManagerRecordsEachRequestsClientAddress()
+
+    /**
+     * The auth manager captures the client address once, at construction. Each HTTP request must
+     * record its own, or login throttling is scoped to the first request's address.
+     *
+     * @return void
+     */
+    public function testTheAuthManagerRecordsEachRequestsClientAddress(): void
     {
         $seen = [];
 
@@ -330,16 +356,13 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     }
 
     /**
-     * Halcyon's in-memory record cache is held statically, so records cached by one request would
-     * otherwise be served to the next. Uses the file store because Octane already flushes the array
-     * store between operations.
-     */
-    /**
      * Storm caches duplicate queries in memory, and only a write made through this process clears
      * that cache. A row another worker changes must still be read fresh by the next request here,
      * or a revoked permission or a changed setting is never seen.
+     *
+     * @return void
      */
-    public function testQueryMemoryCacheDoesNotCrossRequests()
+    public function testQueryMemoryCacheDoesNotCrossRequests(): void
     {
         $group = \Backend\Models\UserGroup::create(['name' => 'Before', 'code' => 'octane-query-cache']);
         $seen = [];
@@ -368,8 +391,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     /**
      * Storm's getUser() returns the user a manager already holds without checking the session, so
      * every auth manager that outlives an operation must be cleared, not only the back-end one.
+     *
+     * @return void
      */
-    public function testEveryStormAuthManagerForgetsItsUser()
+    public function testEveryStormAuthManagerForgetsItsUser(): void
     {
         $this->bootWorker();
         FrontEndAuthManager::instance();
@@ -400,8 +425,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     /**
      * An abandoned transaction is rolled back at the start of the NEXT operation. Its rollback
      * callbacks belong to the request that registered them and must not run as the next one.
+     *
+     * @return void
      */
-    public function testRollbackCallbacksOfAnAbandonedTransactionDoNotRun()
+    public function testRollbackCallbacksOfAnAbandonedTransactionDoNotRun(): void
     {
         $ran = [];
 
@@ -428,8 +455,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     /**
      * Component properties are memoized in a static for the request. A worker must read them again,
      * or an edit served by another worker is never seen here.
+     *
+     * @return void
      */
-    public function testComponentPropertyMapDoesNotCrossRequests()
+    public function testComponentPropertyMapDoesNotCrossRequests(): void
     {
         $seen = [];
 
@@ -454,7 +483,15 @@ class RequestStateResetTest extends PersistentWorkerTestCase
 
         $this->assertSame([null], $seen);
     }
-    public function testHalcyonRequestCacheDoesNotCrossRequests()
+
+    /**
+     * Halcyon's in-memory record cache is held statically, so records cached by one request would
+     * otherwise be served to the next. Uses the file store because Octane already flushes the array
+     * store between operations.
+     *
+     * @return void
+     */
+    public function testHalcyonRequestCacheDoesNotCrossRequests(): void
     {
         $seen = [];
 
@@ -517,8 +554,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     /**
      * An unbalanced mask left by a throwing request would otherwise be applied to the next
      * request's exception.
+     *
+     * @return void
      */
-    public function testErrorHandlerMasksDoNotCrossRequests()
+    public function testErrorHandlerMasksDoNotCrossRequests(): void
     {
         $activeMasks = [];
 
@@ -545,7 +584,13 @@ class RequestStateResetTest extends PersistentWorkerTestCase
         $this->assertNull($activeMasks[0], 'an applied mask must not survive the request boundary');
     }
 
-    public function testTwigIncludeGateIsClosedAtTheStartOfEachRequest()
+    /**
+     * The Twig loader's include gate, opened by one request, is closed again when the next request
+     * starts.
+     *
+     * @return void
+     */
+    public function testTwigIncludeGateIsClosedAtTheStartOfEachRequest(): void
     {
         $gates = [];
 
@@ -572,8 +617,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     /**
      * No stock Octane listener unwinds an abandoned transaction, so an open one would hold its
      * snapshot open for the next operation.
+     *
+     * @return void
      */
-    public function testAbandonedTransactionsAreRolledBack()
+    public function testAbandonedTransactionsAreRolledBack(): void
     {
         $levels = [];
 
@@ -597,7 +644,13 @@ class RequestStateResetTest extends PersistentWorkerTestCase
         $this->assertSame([0], $levels, 'an abandoned transaction must be rolled back to depth zero');
     }
 
-    public function testStagedTransactionCallbacksDoNotCrossRequests()
+    /**
+     * After-commit callbacks staged in a transaction that one request abandoned are gone by the next
+     * request.
+     *
+     * @return void
+     */
+    public function testStagedTransactionCallbacksDoNotCrossRequests(): void
     {
         $pending = [];
 
@@ -624,16 +677,13 @@ class RequestStateResetTest extends PersistentWorkerTestCase
     }
 
     /**
-     * The A13 correction: an exception that escapes the HTTP kernel skips
-     * ApplicationGateway::terminate(), so RequestTerminated is never dispatched and cleanup
-     * attached only to that event would not run.
-     */
-    /**
      * Octane reports a failed operation's exception from a default-priority WorkerErrorOccurred
      * listener. The reset on that event must run after it, so the report still sees the request's
      * user, and must still clear the user afterwards.
+     *
+     * @return void
      */
-    public function testAFailedOperationIsReportedBeforeItsStateIsCleared()
+    public function testAFailedOperationIsReportedBeforeItsStateIsCleared(): void
     {
         $this->bootWorker();
         $userWhenReported = 'not reported';
@@ -643,6 +693,10 @@ class RequestStateResetTest extends PersistentWorkerTestCase
                 ->getValue(AuthManager::instance());
         });
 
+        /*
+         * An Octane route rather than addWorkerRoute(): Octane serves it outside the HTTP kernel, so
+         * the exception escapes to the worker instead of being rendered as an error page.
+         */
         \Laravel\Octane\Facades\Octane::route('GET', '/_worker/fail-signed-in', function () {
             (new \ReflectionProperty(\Winter\Storm\Auth\Manager::class, 'user'))
                 ->setValue(AuthManager::instance(), new \stdClass());
@@ -659,7 +713,15 @@ class RequestStateResetTest extends PersistentWorkerTestCase
             'the error-path reset must still clear the user'
         );
     }
-    public function testAnEscapingExceptionSkipsRequestTerminatedButStillCleansUp()
+
+    /**
+     * An exception that escapes the HTTP kernel skips ApplicationGateway::terminate(), so
+     * RequestTerminated is never dispatched and cleanup attached only to that event would not run.
+     * The reset must still clear what the failed operation left behind.
+     *
+     * @return void
+     */
+    public function testAnEscapingExceptionSkipsRequestTerminatedButStillCleansUp(): void
     {
         $events = [];
 

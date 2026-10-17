@@ -11,7 +11,7 @@ use Winter\Octane\Contracts\ResetsWorkerState;
  *
  * The second form is the one that matters in practice. `implements` is resolved when the class is
  * loaded, so a plugin naming ResetsWorkerState cannot be loaded at all by a Winter whose Storm
- * predates the interface -- it fatals on every request, under PHP-FPM as much as under a worker,
+ * predates the interface. It fatals on every request, under PHP-FPM as much as under a worker,
  * because loading the plugin is what fails. A plugin distributed against several Winter versions
  * therefore cannot name it, and if the reset skipped those plugins they would keep exactly the
  * request-derived state this class exists to clear.
@@ -19,7 +19,8 @@ use Winter\Octane\Contracts\ResetsWorkerState;
 class PluginResetDiscoveryTest extends PersistentWorkerTestCase
 {
     /**
-     * Both forms are discovered, and a plugin offering neither is left alone rather than fatalling.
+     * Both forms are discovered, and a plugin offering neither is left alone rather than causing a
+     * fatal error.
      *
      * @return void
      */
@@ -44,9 +45,11 @@ class PluginResetDiscoveryTest extends PersistentWorkerTestCase
                 /**
                  * @var int Number of times the reset was invoked.
                  */
-                public $resets = 0;
+                public int $resets = 0;
 
                 /**
+                 * Counts each time the reset reaches this plugin.
+                 *
                  * @return void
                  */
                 public function resetWorkerState(): void
@@ -98,6 +101,8 @@ class PluginResetDiscoveryTest extends PersistentWorkerTestCase
      * swallowing the report of the original failure and preventing the worker from being retired.
      * The ordinary path must keep throwing: the next RequestReceived is what surfaces a
      * persistently broken plugin.
+     *
+     * @return void
      */
     public function testAFailingResetIsLoggedNotThrownWhileHandlingAWorkerError(): void
     {
@@ -105,6 +110,11 @@ class PluginResetDiscoveryTest extends PersistentWorkerTestCase
 
         $failing = new class ($app) extends PluginBase
         {
+            /**
+             * Fails every time the reset reaches this plugin.
+             *
+             * @return void
+             */
             public function resetWorkerState(): void
             {
                 throw new \RuntimeException('deliberate reset failure');
@@ -148,9 +158,11 @@ class PluginResetDiscoveryMethodPlugin extends PluginBase
     /**
      * @var int Number of times the reset was invoked.
      */
-    public $resets = 0;
+    public int $resets = 0;
 
     /**
+     * Counts each time the reset reaches this plugin.
+     *
      * @return void
      */
     public function resetWorkerState(): void
@@ -167,5 +179,5 @@ class PluginResetDiscoveryInertPlugin extends PluginBase
     /**
      * @var bool Set only if something reached this plugin.
      */
-    public $touched = false;
+    public bool $touched = false;
 }

@@ -113,7 +113,13 @@ class CoreStateDiscoveryTest extends PluginTestCase
         'System\Helpers\Cache' => 'no instance state',
     ];
 
-    public function testEveryCoreStaticAndSingletonIsResetOrAccepted()
+    /**
+     * Every static property and Singleton in core and Storm is either cleared by the reset or listed
+     * in ACCEPTED.
+     *
+     * @return void
+     */
+    public function testEveryCoreStaticAndSingletonIsResetOrAccepted(): void
     {
         $uncovered = [];
 
@@ -135,7 +141,13 @@ class CoreStateDiscoveryTest extends PluginTestCase
         );
     }
 
-    public function testEveryAcceptedEntryStillExists()
+    /**
+     * Every entry in ACCEPTED and RESET_ELSEWHERE still names state that exists in core or Storm, so
+     * the lists do not collect stale entries.
+     *
+     * @return void
+     */
+    public function testEveryAcceptedEntryStillExists(): void
     {
         $discovered = array_flip($this->discoverState());
         $stale = [];
@@ -154,7 +166,12 @@ class CoreStateDiscoveryTest extends PluginTestCase
         );
     }
 
-    public function testNoStateIsBothResetAndAccepted()
+    /**
+     * No entry in ACCEPTED is also cleared by the reset, so each piece of state has one clear owner.
+     *
+     * @return void
+     */
+    public function testNoStateIsBothResetAndAccepted(): void
     {
         $both = [];
 
@@ -245,6 +262,7 @@ class CoreStateDiscoveryTest extends PluginTestCase
     /**
      * The fully qualified names of the classes and traits a file declares.
      *
+     * @param string $source The PHP source of one file.
      * @return list<string>
      */
     protected function declaredNames(string $source): array
@@ -304,6 +322,10 @@ class CoreStateDiscoveryTest extends PluginTestCase
     /**
      * Whether a static property a class reports as its own was copied in from one of its traits,
      * in which case it is reported once, against the trait.
+     *
+     * @param \ReflectionClass<object> $class
+     * @param string $property
+     * @return bool
      */
     protected function comesFromTrait(ReflectionClass $class, string $property): bool
     {
@@ -316,6 +338,12 @@ class CoreStateDiscoveryTest extends PluginTestCase
         return false;
     }
 
+    /**
+     * Whether the class or any of its parents uses Storm's Singleton trait.
+     *
+     * @param \ReflectionClass<object> $class
+     * @return bool
+     */
     protected function usesSingleton(ReflectionClass $class): bool
     {
         for ($current = $class; $current !== false; $current = $current->getParentClass()) {
@@ -330,6 +358,9 @@ class CoreStateDiscoveryTest extends PluginTestCase
     /**
      * Whether the reset clears this state: through one of its manifests, through
      * resetAuthManagers() for any Storm auth manager, or through RESET_ELSEWHERE.
+     *
+     * @param string $key A Class::$property or Class key, as discoverState() reports it.
+     * @return bool
      */
     protected function isCovered(string $key): bool
     {
@@ -354,6 +385,9 @@ class CoreStateDiscoveryTest extends PluginTestCase
     }
 
     /**
+     * Reads one of the reset's manifest constants.
+     *
+     * @param string $name The constant name, such as STATIC_CACHES.
      * @return array<string, array<string, mixed>>
      */
     protected function manifest(string $name): array

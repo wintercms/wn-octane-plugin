@@ -10,8 +10,8 @@ use Illuminate\Http\Request;
  *
  * PluginTestCase registers the plugin under test AFTER the application has booted, and a plugin
  * registered post-boot cannot get its listener order wrong: registering the Octane provider boots
- * it inline, so Octane's listeners always land first. Production is the reverse — the plugin's
- * register() runs during the provider registration phase, before any provider has booted — and
+ * it inline, so Octane's listeners always land first. Production is the reverse: the plugin's
+ * register() runs during the provider registration phase, before any provider has booted, and
  * that is the order in which a listener attached too early lands AHEAD of Octane's
  * GiveNewRequestInstanceToApplication and observes the previous operation's request.
  *
@@ -27,9 +27,9 @@ class ProductionBootOrderTest extends PersistentWorkerTestCase
      * RegisterProviders bootstrapper runs, so plugin registration happens during the register
      * phase rather than being injected after boot.
      *
-     * @return \Symfony\Component\HttpKernel\HttpKernelInterface
+     * @return \Illuminate\Foundation\Application
      */
-    public function createApplication()
+    public function createApplication(): \Illuminate\Foundation\Application
     {
         $app = require __DIR__ . '/../../../../bootstrap/app.php';
 
@@ -92,8 +92,10 @@ class ProductionBootOrderTest extends PersistentWorkerTestCase
      * Storm's dispatcher wraps every listener in a closure when it is attached, so the order
      * cannot be asserted structurally; instead a probe plugin records when the reset ran and a
      * default-priority marker listener records when the rest of the chain started.
+     *
+     * @return void
      */
-    public function testTheResetRunsFirstUnderProductionRegistrationOrder()
+    public function testTheResetRunsFirstUnderProductionRegistrationOrder(): void
     {
         $app = $this->bootWorker();
 
@@ -111,11 +113,13 @@ class ProductionBootOrderTest extends PersistentWorkerTestCase
         $probe = new class ($app) extends \System\Classes\PluginBase
         {
             /**
-             * @var callable|null Called when the reset reaches this plugin.
+             * @var \Closure|null Called when the reset reaches this plugin.
              */
-            public $onReset = null;
+            public ?\Closure $onReset = null;
 
             /**
+             * Reports to the test that the reset reached this plugin.
+             *
              * @return void
              */
             public function resetWorkerState(): void

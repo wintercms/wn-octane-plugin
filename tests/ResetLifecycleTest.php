@@ -19,16 +19,18 @@ class ResetLifecycleTest extends PersistentWorkerTestCase
      *
      * @return \System\Classes\PluginBase
      */
-    protected function makeCountingPlugin()
+    protected function makeCountingPlugin(): PluginBase
     {
         return new class ($this->app) extends PluginBase
         {
             /**
              * @var int Number of times the reset was invoked.
              */
-            public $resets = 0;
+            public int $resets = 0;
 
             /**
+             * Counts each time the reset reaches this plugin.
+             *
              * @return void
              */
             public function resetWorkerState(): void
@@ -41,8 +43,10 @@ class ResetLifecycleTest extends PersistentWorkerTestCase
     /**
      * Octane fires TaskReceived for concurrent tasks and TickReceived on the interval timer.
      * Both serve application code from the same worker, so both need the reset.
+     *
+     * @return void
      */
-    public function testTaskAndTickOperationsAreAlsoReset()
+    public function testTaskAndTickOperationsAreAlsoReset(): void
     {
         $app = $this->bootWorker();
 
@@ -67,14 +71,18 @@ class ResetLifecycleTest extends PersistentWorkerTestCase
      * On the ordinary path a failing plugin fails the operation. While the worker is already
      * handling an error there is no operation left to fail, and skipping the remaining plugins
      * would leave exactly the cross-user state the reset exists to clear.
+     *
+     * @return void
      */
-    public function testAFailingPluginDoesNotAbandonTheRemainingPluginsOnTheErrorPath()
+    public function testAFailingPluginDoesNotAbandonTheRemainingPluginsOnTheErrorPath(): void
     {
         $app = $this->bootWorker();
 
         $failing = new class ($app) extends PluginBase
         {
             /**
+             * Fails every time the reset reaches this plugin.
+             *
              * @return void
              */
             public function resetWorkerState(): void
@@ -113,14 +121,18 @@ class ResetLifecycleTest extends PersistentWorkerTestCase
      * WorkerErrorOccurred is dispatched from inside the worker loop's catch block. If the reset's
      * own logging throws there, the exception escapes the loop and kills the process, which is
      * the exact failure mode this path is meant to close.
+     *
+     * @return void
      */
-    public function testABrokenLoggerCannotEscapeTheWorkerErrorPath()
+    public function testABrokenLoggerCannotEscapeTheWorkerErrorPath(): void
     {
         $app = $this->bootWorker();
 
         $failing = new class ($app) extends PluginBase
         {
             /**
+             * Fails every time the reset reaches this plugin.
+             *
              * @return void
              */
             public function resetWorkerState(): void
@@ -131,7 +143,14 @@ class ResetLifecycleTest extends PersistentWorkerTestCase
 
         \Illuminate\Support\Facades\Log::swap(new class
         {
-            public function __call($method, $arguments)
+            /**
+             * Fails every logging call, as a broken log channel would.
+             *
+             * @param string $method
+             * @param array<int, mixed> $arguments
+             * @return mixed
+             */
+            public function __call(string $method, array $arguments): mixed
             {
                 throw new \RuntimeException('the log channel is broken too');
             }
@@ -157,8 +176,10 @@ class ResetLifecycleTest extends PersistentWorkerTestCase
      * WorkerErrorOccurred after a failed request means the reset may run once for the failed
      * operation and again when the next request arrives, so every step has to tolerate finding
      * the state already clean.
+     *
+     * @return void
      */
-    public function testRunningTheResetTwiceIsHarmless()
+    public function testRunningTheResetTwiceIsHarmless(): void
     {
         $app = $this->bootWorker();
 
@@ -185,8 +206,10 @@ class ResetLifecycleTest extends PersistentWorkerTestCase
      * The elevated flag is what keeps the reset attached on privileged routes and commands where
      * ordinary plugin initialization is skipped. Losing it would not fail any functional test,
      * so it is pinned here.
+     *
+     * @return void
      */
-    public function testThePluginIsElevated()
+    public function testThePluginIsElevated(): void
     {
         $plugin = new \Winter\Octane\Plugin($this->app);
 

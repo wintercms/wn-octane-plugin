@@ -19,7 +19,7 @@ class OctaneRegistrationTest extends PluginTestCase
 {
     /**
      * The plugin's composer.json requires laravel/octane, but the plugin's files can be present
-     * in an installation where composer has not run. The behaviour under test only exists once
+     * in an installation where composer has not run. The behavior under test only exists once
      * the package is installed, so these skip rather than fail without it.
      *
      * @return void
@@ -33,7 +33,13 @@ class OctaneRegistrationTest extends PluginTestCase
         }
     }
 
-    public function testPackageDiscoveryRemainsDisabled()
+    /**
+     * Laravel package discovery is still off in Winter, which is why the plugin registers Octane's
+     * provider itself.
+     *
+     * @return void
+     */
+    public function testPackageDiscoveryRemainsDisabled(): void
     {
         $this->assertFalse(
             (bool) $this->app['config']->get('app.loadDiscoveredPackages', false),
@@ -42,7 +48,13 @@ class OctaneRegistrationTest extends PluginTestCase
         );
     }
 
-    public function testOctaneProviderIsRegisteredWhenThePluginIsInstalled()
+    /**
+     * Octane's service provider is loaded and the "octane" binding exists once the plugin is
+     * registered.
+     *
+     * @return void
+     */
+    public function testOctaneProviderIsRegisteredWhenThePluginIsInstalled(): void
     {
         $this->assertContains(
             OctaneServiceProvider::class,
@@ -59,8 +71,10 @@ class OctaneRegistrationTest extends PluginTestCase
     /**
      * Registering the provider must stay inert outside a worker: it binds services and reads
      * configuration, but Octane's events are only dispatched by an Octane worker.
+     *
+     * @return void
      */
-    public function testRegisteringOctaneDoesNotWireWinterSpecificListeners()
+    public function testRegisteringOctaneDoesNotWireWinterSpecificListeners(): void
     {
         $this->assertIsArray($this->app['config']->get('octane.listeners'));
     }
@@ -68,12 +82,15 @@ class OctaneRegistrationTest extends PluginTestCase
     /**
      * A worker boots against a request that is not a back-end request, so core skips its back-end
      * registrations. The plugin must make them, or every back-end page has empty menus and settings.
+     *
+     * @return void
      */
-    public function testRegistersBackEndExtensionsInAWorker()
+    public function testRegistersBackEndExtensionsInAWorker(): void
     {
         $this->assertFalse($this->app->runningInBackend());
 
         $registrations = $this->withEmptyBackEndRegistrations(function () {
+            // The plugin detects a worker by this binding, which only an Octane server provides.
             $this->app->instance('Laravel\Octane\Contracts\Client', new \stdClass());
 
             (new \Winter\Octane\Plugin($this->app))->registerBackendExtensions();
@@ -88,8 +105,10 @@ class OctaneRegistrationTest extends PluginTestCase
     /**
      * Outside a worker core already makes these registrations for back-end requests, so the plugin
      * must not make them a second time.
+     *
+     * @return void
      */
-    public function testRegistersNothingOutsideAWorker()
+    public function testRegistersNothingOutsideAWorker(): void
     {
         $registrations = $this->withEmptyBackEndRegistrations(function () {
             (new \Winter\Octane\Plugin($this->app))->registerBackendExtensions();
@@ -102,7 +121,8 @@ class OctaneRegistrationTest extends PluginTestCase
      * Run the callback with the back-end registration callbacks emptied, and return the callbacks
      * it registered. The original callbacks are restored afterwards.
      *
-     * @return array<string, array>
+     * @param callable $callback The code that makes the registrations.
+     * @return array<string, array<int|string, mixed>> The callbacks registered, keyed by registration type.
      */
     protected function withEmptyBackEndRegistrations(callable $callback): array
     {

@@ -19,6 +19,11 @@ use System\Tests\Bootstrap\PluginTestCase;
  */
 class StaticCacheManifestTest extends PluginTestCase
 {
+    /**
+     * Clears the reset's trait-user memo, so each test starts as a fresh worker would.
+     *
+     * @return void
+     */
     public function setUp(): void
     {
         parent::setUp();
@@ -34,6 +39,11 @@ class StaticCacheManifestTest extends PluginTestCase
         }
     }
 
+    /**
+     * The reset's class manifest, STATIC_CACHES.
+     *
+     * @return array<string, array<string, mixed>>
+     */
     protected function manifest(): array
     {
         $reflection = new ReflectionClass(ResetsRequestState::class);
@@ -41,6 +51,11 @@ class StaticCacheManifestTest extends PluginTestCase
         return $reflection->getConstant('STATIC_CACHES');
     }
 
+    /**
+     * The reset's trait manifest, TRAIT_STATIC_CACHES.
+     *
+     * @return array<string, array<string, mixed>>
+     */
     protected function traitManifest(): array
     {
         $reflection = new ReflectionClass(ResetsRequestState::class);
@@ -48,7 +63,12 @@ class StaticCacheManifestTest extends PluginTestCase
         return $reflection->getConstant('TRAIT_STATIC_CACHES');
     }
 
-    public function testTheManifestIsNotEmpty()
+    /**
+     * The class manifest lists at least one static cache.
+     *
+     * @return void
+     */
+    public function testTheManifestIsNotEmpty(): void
     {
         $this->assertNotEmpty(
             $this->manifest(),
@@ -58,8 +78,10 @@ class StaticCacheManifestTest extends PluginTestCase
 
     /**
      * Every manifest entry must name a class that exists and a property that is actually static.
+     *
+     * @return void
      */
-    public function testEveryManifestedPropertyExistsAndIsStatic()
+    public function testEveryManifestedPropertyExistsAndIsStatic(): void
     {
         $problems = [];
 
@@ -107,8 +129,10 @@ class StaticCacheManifestTest extends PluginTestCase
      * rebuild, so the cache serves emptiness for the rest of the worker's life. An earlier version
      * of this test allowed any reset value where the default was null, and that loophole let
      * exactly that bug ship for the view-global and mail-layout caches.
+     *
+     * @return void
      */
-    public function testResetValuesMatchTheDeclaredDefaults()
+    public function testResetValuesMatchTheDeclaredDefaults(): void
     {
         $problems = [];
 
@@ -143,8 +167,10 @@ class StaticCacheManifestTest extends PluginTestCase
     /**
      * Every manager property the reset clears must still exist, or a rename in core would silently
      * stop the reset rather than fail.
+     *
+     * @return void
      */
-    public function testManagerStateManifestMatchesCore()
+    public function testManagerStateManifestMatchesCore(): void
     {
         $manifest = (new \ReflectionClass(ResetsRequestState::class))->getConstant('MANAGER_STATE');
 
@@ -163,8 +189,10 @@ class StaticCacheManifestTest extends PluginTestCase
     /**
      * The theme caches are cleared through the public API rather than the manifest, because only the
      * in-memory copy should be discarded; the external cache entries have their own invalidation.
+     *
+     * @return void
      */
-    public function testThemeExposesAMemoryOnlyCacheReset()
+    public function testThemeExposesAMemoryOnlyCacheReset(): void
     {
         $method = new \ReflectionMethod(\Cms\Classes\Theme::class, 'resetCache');
 
@@ -179,8 +207,10 @@ class StaticCacheManifestTest extends PluginTestCase
 
     /**
      * Every trait manifest entry must name a real trait that declares the property as static.
+     *
+     * @return void
      */
-    public function testEveryManifestedTraitPropertyExistsAndIsStatic()
+    public function testEveryManifestedTraitPropertyExistsAndIsStatic(): void
     {
         $problems = [];
 
@@ -217,8 +247,10 @@ class StaticCacheManifestTest extends PluginTestCase
      * This is the reason TRAIT_STATIC_CACHES exists at all, and it is asserted here so that the
      * separation is not "simplified" back into one manifest by someone who assumes a trait static
      * behaves like an inherited one.
+     *
+     * @return void
      */
-    public function testAssigningATraitStaticDoesNotReachTheUsingClass()
+    public function testAssigningATraitStaticDoesNotReachTheUsingClass(): void
     {
         ManifestTraitUser::seed(['seeded']);
 
@@ -241,8 +273,10 @@ class StaticCacheManifestTest extends PluginTestCase
      * happen to be autoloaded when this runs. Plugins are free to use these traits, so the guarantee
      * being asserted is "any class using the trait gets reset", and a freshly declared user tests
      * exactly that. It also keeps the test meaningful for a trait with no users inside core.
+     *
+     * @return void
      */
-    public function testTheResetClearsTraitStaticsOnUsingClasses()
+    public function testTheResetClearsTraitStaticsOnUsingClasses(): void
     {
         $subjects = [];
 
@@ -274,6 +308,7 @@ class StaticCacheManifestTest extends PluginTestCase
      * Declares a class that uses the given trait and returns its name.
      *
      * @param class-string $trait
+     * @param string $discriminator Makes the class name unique when one test needs a second user.
      * @return class-string
      */
     protected function declareUserOf(string $trait, string $discriminator = ''): string
@@ -287,21 +322,22 @@ class StaticCacheManifestTest extends PluginTestCase
         return $class;
     }
 
-
     /**
      * A class using a manifested trait that is declared after the first reset must still be found.
      *
      * resolveTraitUsers() remembers how far into get_declared_classes() the last pass reached, so that
      * only classes autoloaded since are examined. Autoloading means real trait users routinely appear
      * after the worker's first operation, so a cursor that skipped them would leave those classes
-     * permanently unreset — and silently, since nothing else observes the memo.
+     * permanently unreset, and silently, since nothing else observes the memo.
      *
      * Scope worth being explicit about: this covers a class declared *between* two passes, which is the
      * case that actually occurs. It does not distinguish the two ways the cursor could be advanced,
      * because a class appearing *during* a pass would need something in the loop to autoload, and
      * nothing there does. That part of resolveTraitUsers() is defensive and has no failing test.
+     *
+     * @return void
      */
-    public function testATraitUserDeclaredAfterTheFirstResetIsStillFound()
+    public function testATraitUserDeclaredAfterTheFirstResetIsStillFound(): void
     {
         // Advances the cursor past every class currently declared.
         $this->invokeReset();
@@ -333,6 +369,8 @@ class StaticCacheManifestTest extends PluginTestCase
     /**
      * Runs only the static cache portion of the reset, so this test does not depend on the rest of
      * the request boundary being satisfiable outside a worker.
+     *
+     * @return void
      */
     protected function invokeReset(): void
     {
@@ -348,19 +386,36 @@ class StaticCacheManifestTest extends PluginTestCase
  */
 trait ManifestFixtureTrait
 {
-    protected static $cache = [];
+    /**
+     * @var array<int, string> The value each using class holds its own copy of.
+     */
+    protected static array $cache = [];
 
+    /**
+     * Returns the using class's copy of the cache.
+     *
+     * @return array<int, string>
+     */
     public static function peek(): array
     {
         return static::$cache;
     }
 
+    /**
+     * Sets the using class's copy of the cache.
+     *
+     * @param array<int, string> $value
+     * @return void
+     */
     public static function seed(array $value): void
     {
         static::$cache = $value;
     }
 }
 
+/**
+ * Uses ManifestFixtureTrait, so it holds its own copy of the trait's static.
+ */
 class ManifestTraitUser
 {
     use ManifestFixtureTrait;

@@ -18,9 +18,12 @@ use Winter\Octane\Classes\ResetsRequestState;
 class ManifestResetDispatchTest extends PersistentWorkerTestCase
 {
     /**
-     * Dirty every static in the class manifest, dispatch, and confirm each was reset.
+     * Every static in the class manifest is back at its reset value by the time a dispatched request
+     * runs, after the test dirtied it.
+     *
+     * @return void
      */
-    public function testEveryManifestedStaticIsClearedByADispatchedRequest()
+    public function testEveryManifestedStaticIsClearedByADispatchedRequest(): void
     {
         $this->bootWorker();
 
@@ -70,9 +73,12 @@ class ManifestResetDispatchTest extends PersistentWorkerTestCase
     }
 
     /**
-     * Same sweep for the trait manifest, against a freshly declared user of each trait.
+     * Every static in the trait manifest is cleared by a dispatched request, checked on a freshly
+     * declared user of each trait.
+     *
+     * @return void
      */
-    public function testEveryManifestedTraitStaticIsClearedByADispatchedRequest()
+    public function testEveryManifestedTraitStaticIsClearedByADispatchedRequest(): void
     {
         $this->bootWorker();
 
@@ -84,6 +90,9 @@ class ManifestResetDispatchTest extends PersistentWorkerTestCase
                 continue;
             }
 
+            /*
+             * A trait static lives on each using class, so the sweep needs a class to dirty and read.
+             */
             $class = 'ManifestDispatchTraitUser_' . md5($trait);
 
             if (!class_exists($class, false)) {
@@ -123,10 +132,15 @@ class ManifestResetDispatchTest extends PersistentWorkerTestCase
     }
 
     /**
-     * Same sweep for the singleton managers: dirty every property on each manager's instance in
-     * the base container, dispatch, and confirm each was reset.
+     * Every property in the manager manifest no longer holds the value the test dirtied it with
+     * when a dispatched request runs.
+     *
+     * The properties are dirtied on each manager's instance in the base container, which is the
+     * instance every request sandbox shares.
+     *
+     * @return void
      */
-    public function testEveryManifestedManagerPropertyIsClearedByADispatchedRequest()
+    public function testEveryManifestedManagerPropertyIsClearedByADispatchedRequest(): void
     {
         $this->bootWorker();
 
@@ -182,10 +196,11 @@ class ManifestResetDispatchTest extends PersistentWorkerTestCase
     /**
      * A dirty value that the property's declared type accepts.
      *
-     * @param mixed $resetValue
+     * @param \ReflectionProperty $property The property the value will be written to.
+     * @param mixed $resetValue The value the reset restores.
      * @return mixed
      */
-    protected function dirtyValueForProperty(\ReflectionProperty $property, $resetValue)
+    protected function dirtyValueForProperty(\ReflectionProperty $property, mixed $resetValue): mixed
     {
         $type = $property->getType();
 
@@ -212,13 +227,14 @@ class ManifestResetDispatchTest extends PersistentWorkerTestCase
 
         return $this->dirtyValueFor($resetValue);
     }
+
     /**
      * A value of the same shape as the reset value, but distinguishable from it.
      *
-     * @param mixed $resetValue
+     * @param mixed $resetValue The value the reset restores.
      * @return mixed
      */
-    protected function dirtyValueFor($resetValue)
+    protected function dirtyValueFor(mixed $resetValue): mixed
     {
         if ($resetValue === null) {
             return ['__octane_dirty__' => true];

@@ -34,32 +34,31 @@ use Throwable;
 abstract class PersistentWorkerTestCase extends PluginTestCase
 {
     /**
-     * The base application every request sandbox is cloned from.
+     * @var \Illuminate\Foundation\Application|null The base application every request sandbox is
+     * cloned from, once the worker has booted.
      */
     protected ?Application $workerApplication = null;
 
     /**
-     * The real Octane worker driving the dispatches, once booted.
-     *
-     * @var \Laravel\Octane\Worker|null
+     * @var \Laravel\Octane\Worker|null The real Octane worker driving the dispatches, once booted.
      */
-    protected $worker = null;
+    protected ?\Laravel\Octane\Worker $worker = null;
 
     /**
-     * The recording client handed to the worker.
-     *
-     * @var \Laravel\Octane\Contracts\Client|null
+     * @var \Laravel\Octane\Contracts\Client|null The recording client handed to the worker.
      */
-    protected $workerClient = null;
+    protected ?\Laravel\Octane\Contracts\Client $workerClient = null;
 
     /**
-     * Responses and exceptions from the most recent dispatchWorkerRequests() call, in order.
-     *
-     * @var array<int, \Symfony\Component\HttpFoundation\Response|\Throwable>
+     * @var array<int, \Symfony\Component\HttpFoundation\Response|\Throwable> Responses and exceptions
+     * from the most recent dispatchWorkerRequests() call, in order.
      */
     protected array $workerResults = [];
 
     /**
+     * Prepares the application the way a worker process starts, and skips when laravel/octane is
+     * missing.
+     *
      * The plugin's composer.json requires laravel/octane, but the plugin's files can be present
      * in an installation where composer has not run, so these tests skip rather than fail where
      * the package is absent.
@@ -71,7 +70,7 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
         /*
          * Every Octane server entrypoint requires octane's bin/bootstrap.php, which sets
          * APP_RUNNING_IN_CONSOLE = false before the worker's application exists, so inside a real
-         * worker runningInConsole() answers false — during provider registration and boot as much
+         * worker runningInConsole() answers false, during provider registration and boot as much
          * as during requests. Set before parent::setUp() creates the application, so the memo is
          * computed with the production answer rather than patched afterwards, and boot-time
          * branches on runningInConsole() take the path a worker would take.
@@ -81,9 +80,9 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
         /*
          * A real worker process starts with empty statics. PHPUnit rebuilds the application per
          * test in ONE process, so Halcyon's static cache-manager reference still points at the
-         * previous test's application while the next one registers its providers — and with
-         * console detection now answering false, the register-time flush would reach into that
-         * stale manager. Clearing it reproduces the fresh-process starting state.
+         * previous test's application while the next one registers its providers. With console
+         * detection now answering false, the register-time flush would reach into that stale
+         * manager. Clearing it reproduces the fresh-process starting state.
          */
         \Winter\Storm\Halcyon\Model::setCacheManager(null);
 
@@ -109,6 +108,11 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
         }
     }
 
+    /**
+     * Restores the console flag and drops the worker, so the next test boots its own.
+     *
+     * @return void
+     */
     public function tearDown(): void
     {
         unset($_ENV['APP_RUNNING_IN_CONSOLE']);
@@ -129,12 +133,12 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
      * path on disk for language and view namespaces. Tests using this are about which plugins the
      * reset selects, so the fakes only have to be present and enabled.
      *
-     * @param array<string, \System\Classes\PluginBase> $fakes
-     * @param callable $callback
+     * @param array<string, \System\Classes\PluginBase> $fakes The fake plugins, keyed by plugin code.
+     * @param callable $callback The code to run while the fakes are installed.
      * @param bool $keepExisting Merge the fakes over the real table instead of replacing it.
      * @return mixed The callback's return value.
      */
-    protected function withFakePlugins(array $fakes, callable $callback, bool $keepExisting = false)
+    protected function withFakePlugins(array $fakes, callable $callback, bool $keepExisting = false): mixed
     {
         $manager    = \System\Classes\PluginManager::instance();
         $plugins    = new \ReflectionProperty($manager, 'plugins');
@@ -167,30 +171,52 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
      *
      * @return \Laravel\Octane\Contracts\Client
      */
-    protected function makeWorkerClient()
+    protected function makeWorkerClient(): \Laravel\Octane\Contracts\Client
     {
         return new class implements \Laravel\Octane\Contracts\Client
         {
             /**
-             * @var array<int, \Laravel\Octane\OctaneResponse>
+             * @var array<int, \Laravel\Octane\OctaneResponse> Every response the worker sent, in order.
              */
             public array $responses = [];
 
             /**
-             * @var array<int, \Throwable>
+             * @var array<int, \Throwable> Every exception the worker reported, in order.
              */
             public array $errors = [];
 
+            /**
+             * Returns the request the test passed in the context, or the current one when it passed none.
+             *
+             * @param \Laravel\Octane\RequestContext $context
+             * @return array{0: \Illuminate\Http\Request, 1: \Laravel\Octane\RequestContext}
+             */
             public function marshalRequest(\Laravel\Octane\RequestContext $context): array
             {
                 return [$context->data['request'] ?? Request::capture(), $context];
             }
 
+            /**
+             * Records a response instead of sending it.
+             *
+             * @param \Laravel\Octane\RequestContext $context
+             * @param \Laravel\Octane\OctaneResponse $response
+             * @return void
+             */
             public function respond(\Laravel\Octane\RequestContext $context, \Laravel\Octane\OctaneResponse $response): void
             {
                 $this->responses[] = $response;
             }
 
+            /**
+             * Records an exception that escaped the operation instead of rendering it.
+             *
+             * @param \Throwable $e
+             * @param \Illuminate\Foundation\Application $app
+             * @param \Illuminate\Http\Request $request
+             * @param \Laravel\Octane\RequestContext $context
+             * @return void
+             */
             public function error(Throwable $e, Application $app, Request $request, \Laravel\Octane\RequestContext $context): void
             {
                 $this->errors[] = $e;
@@ -205,8 +231,10 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
      * bootstrap would discard the migrations and test state already set up on $this->app. The
      * factory is therefore overridden at exactly one point: createApplication() applies the
      * worker's initial instances (the client binding among them) to the prepared application and
-     * warms it, instead of constructing a new one. Everything after that — WorkerStarting,
-     * sandboxing, event dispatch, error handling — is Octane's own code.
+     * warms it, instead of constructing a new one. Everything after that (WorkerStarting,
+     * sandboxing, event dispatch, error handling) is Octane's own code.
+     *
+     * @return \Illuminate\Foundation\Application The base application the worker serves from.
      */
     protected function bootWorker(): Application
     {
@@ -218,11 +246,20 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
 
         $factory = new class ($this->app) extends \Laravel\Octane\ApplicationFactory
         {
+            /**
+             * @param \Illuminate\Foundation\Application $prepared The application the test case built.
+             */
             public function __construct(protected Application $prepared)
             {
                 parent::__construct($prepared->basePath());
             }
 
+            /**
+             * Applies the worker's initial instances to the prepared application and warms it.
+             *
+             * @param array<string, mixed> $initialInstances
+             * @return \Illuminate\Foundation\Application
+             */
             public function createApplication(array $initialInstances = []): Application
             {
                 foreach ($initialInstances as $key => $value) {
@@ -286,6 +323,12 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
 
     /**
      * Dispatch a single request and return its response.
+     *
+     * @param string $uri
+     * @param string $method
+     * @param array<string, mixed> $parameters Query or form parameters for the request.
+     * @return \Symfony\Component\HttpFoundation\Response
+     * @throws \Throwable The exception the worker reported, when the request failed.
      */
     protected function dispatchWorkerRequest(string $uri, string $method = 'GET', array $parameters = []): Response
     {
@@ -303,6 +346,11 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
      *
      * Routes are added ahead of the modules' own routes so a test route is not shadowed by the
      * CMS catch-all, which otherwise resolves unknown paths to a 404 page.
+     *
+     * @param string $uri
+     * @param callable $handler
+     * @param string $method
+     * @return void
      */
     protected function addWorkerRoute(string $uri, callable $handler, string $method = 'GET'): void
     {
