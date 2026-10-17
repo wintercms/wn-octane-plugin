@@ -155,6 +155,25 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         $this->assertSame('partial line', $last[1], 'a partial line left when the server stops goes to Octane');
     }
 
+    public function testOutputWrittenJustBeforeTheServerExitsCompletesAHeldRecord()
+    {
+        $command = $this->makeCommand([]);
+        $buffer = new BufferedOutput();
+        (fn () => $this->output = $buffer)->call($command);
+
+        $record = '{"message":"Shutdown failed","context":{},"level":400,"level_name":"ERROR","channel":"prod"}';
+        $half = intdiv(strlen($record), 2);
+
+        $this->callGetServerOutput($command, $this->fakeServer(substr($record, 0, $half), true));
+        $last = $this->callGetServerOutput(
+            $command,
+            $this->fakeServer('', false, substr($record, $half) . "\n")
+        );
+
+        $this->assertSame($record . "\n", $buffer->fetch());
+        $this->assertSame('', $last[1]);
+    }
+
     public function testOnlyMonologRecordsCountAsApplicationLogLines()
     {
         $this->assertTrue(StartFrankenPhpCommand::isApplicationLogLine('{"message":"x","level_name":"ERROR"}'));
@@ -173,12 +192,12 @@ class StartFrankenPhpCommandTest extends PluginTestCase
         return (fn () => $this->getServerOutput($server))->call($command);
     }
 
-    protected function fakeServer(string $errorOutput, bool $running): Process
+    protected function fakeServer(string $errorOutput, bool $running, string $finalErrorOutput = ''): Process
     {
         $server = $this->createStub(Process::class);
         $server->method('isRunning')->willReturn($running);
-        $server->method('getIncrementalOutput')->willReturn('stdout text');
-        $server->method('getIncrementalErrorOutput')->willReturn($errorOutput);
+        $server->method('getIncrementalOutput')->willReturnOnConsecutiveCalls('stdout text', '');
+        $server->method('getIncrementalErrorOutput')->willReturnOnConsecutiveCalls($errorOutput, $finalErrorOutput);
         $server->method('clearOutput')->willReturnSelf();
         $server->method('clearErrorOutput')->willReturnSelf();
 

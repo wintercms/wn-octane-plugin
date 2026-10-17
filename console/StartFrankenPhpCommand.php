@@ -82,15 +82,23 @@ class StartFrankenPhpCommand extends OctaneStartFrankenPhpCommand
     protected function getServerOutput($server)
     {
         [$output, $errorOutput] = parent::getServerOutput($server);
+        $running = $server->isRunning();
+
+        // Checking the status reads the pipes once more, so output written just before the exit is read here.
+        if (!$running) {
+            [$finalOutput, $finalErrorOutput] = parent::getServerOutput($server);
+            $output .= $finalOutput;
+            $errorOutput .= $finalErrorOutput;
+        }
 
         $text = $this->pendingErrorOutput . $errorOutput;
         $cut = strrpos($text, "\n");
 
-        if ($server->isRunning() && $cut !== false) {
+        if ($running && $cut !== false) {
             $this->pendingErrorOutput = substr($text, $cut + 1);
             $text = substr($text, 0, $cut);
         }
-        elseif ($server->isRunning()) {
+        elseif ($running) {
             $this->pendingErrorOutput = $text;
             $text = '';
         }
