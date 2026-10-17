@@ -17,6 +17,8 @@ use System\Tests\Bootstrap\PluginTestCase;
  */
 class OctaneRegistrationTest extends PluginTestCase
 {
+    use ReportsDeprecationsToPhpUnit;
+
     /**
      * The plugin's composer.json requires laravel/octane, but the plugin's files can be present
      * in an installation where composer has not run. The behavior under test only exists once
@@ -69,14 +71,29 @@ class OctaneRegistrationTest extends PluginTestCase
     }
 
     /**
-     * Registering the provider must stay inert outside a worker: it binds services and reads
-     * configuration, but Octane's events are only dispatched by an Octane worker.
+     * The plugin attaches its reset to Octane's events through the dispatcher, so Octane's listener
+     * configuration holds only Octane's own listeners and stays inert outside a worker.
      *
      * @return void
      */
     public function testRegisteringOctaneDoesNotWireWinterSpecificListeners(): void
     {
-        $this->assertIsArray($this->app['config']->get('octane.listeners'));
+        $listeners = $this->app['config']->get('octane.listeners');
+
+        $this->assertIsArray($listeners);
+        $this->assertArrayHasKey(
+            \Laravel\Octane\Events\RequestReceived::class,
+            $listeners,
+            'Octane\'s default listener configuration must be loaded.'
+        );
+
+        array_walk_recursive($listeners, function ($listener): void {
+            $this->assertStringStartsNotWith(
+                'Winter\\Octane\\',
+                is_string($listener) ? $listener : '',
+                'Winter.Octane must not add its own listeners to Octane\'s listener configuration.'
+            );
+        });
     }
 
     /**

@@ -18,6 +18,8 @@ use Winter\Octane\Console\StartFrankenPhpCommand;
  */
 class StartFrankenPhpCommandTest extends PluginTestCase
 {
+    use ReportsDeprecationsToPhpUnit;
+
     /**
      * @var string Worker file path the command under test writes to, inside a temporary directory.
      */

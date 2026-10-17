@@ -19,6 +19,8 @@ use Winter\Octane\Classes\ResetsRequestState;
  */
 class CoreStateDiscoveryTest extends PluginTestCase
 {
+    use ReportsDeprecationsToPhpUnit;
+
     /**
      * State the reset clears outside its manifests, keyed by Class::$property or Class, with where.
      *

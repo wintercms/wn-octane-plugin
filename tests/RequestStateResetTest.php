@@ -276,7 +276,6 @@ class RequestStateResetTest extends PersistentWorkerTestCase
             $manager = AuthManager::instance();
             $reflection = new \ReflectionObject($manager);
             $property = $reflection->getProperty('user');
-            $property->setAccessible(true);
             $property->setValue($manager, new \stdClass());
 
             return 'set';
@@ -286,7 +285,6 @@ class RequestStateResetTest extends PersistentWorkerTestCase
             $manager = AuthManager::instance();
             $reflection = new \ReflectionObject($manager);
             $property = $reflection->getProperty('user');
-            $property->setAccessible(true);
             $seen[] = $property->getValue($manager);
 
             return 'read';
@@ -569,7 +567,6 @@ class RequestStateResetTest extends PersistentWorkerTestCase
 
         $this->addWorkerRoute('_worker/mask-read', function () use (&$activeMasks) {
             $property = (new \ReflectionClass(ErrorHandler::class))->getProperty('activeMask');
-            $property->setAccessible(true);
             $activeMasks[] = $property->getValue();
 
             return 'read';
