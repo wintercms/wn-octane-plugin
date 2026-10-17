@@ -63,11 +63,13 @@ class FrankenPhpSmokeTest extends TestCase
             $this->markTestSkipped('End-to-end test is opt-in; set WINTER_OCTANE_E2E=1 to run it.');
         }
 
-        $this->winterRoot = realpath(__DIR__ . '/../../../../..');
+        $winterRoot = realpath(__DIR__ . '/../../../../..');
 
-        if ($this->winterRoot === false || !file_exists($this->winterRoot . '/.env')) {
+        if ($winterRoot === false || !file_exists($winterRoot . '/.env')) {
             $this->markTestSkipped('No configured Winter installation (.env) surrounds the plugin.');
         }
+
+        $this->winterRoot = $winterRoot;
     }
 
     /**
