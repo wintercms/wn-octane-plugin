@@ -2,6 +2,8 @@
 <phpunit
     bootstrap="tests/bootstrap.php"
     colors="true"
+    displayDetailsOnTestsThatTriggerDeprecations="true"
+    failOnDeprecation="true"
 >
     <testsuites>
         <testsuite name="Octane">
@@ -12,6 +14,19 @@
             <directory>./tests/E2e</directory>
         </testsuite>
     </testsuites>
+    <source ignoreIndirectDeprecations="true">
+        <include>
+            <directory>./classes</directory>
+            <directory>./console</directory>
+            <directory>./contracts</directory>
+            <directory>./tests</directory>
+            <file>./Plugin.php</file>
+            <file>./routes.php</file>
+        </include>
+        <deprecationTrigger>
+            <method>Winter\Octane\Tests\DeprecationForwarder::handle</method>
+        </deprecationTrigger>
+    </source>
     <php>
         <env name="APP_ENV" value="testing"/>
         <env name="CACHE_DRIVER" value="array"/>

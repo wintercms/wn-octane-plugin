@@ -62,6 +62,10 @@ Run the tests, PHPCS and PHPStan before pushing.
   `phpcs.xml.dist` enforces it.
 - PHPStan runs at level 8 with Larastan. Fix the type; do not add a baseline or an inline ignore
   without a reason in `phpstan.neon.dist`.
+- The test suite fails on a PHP deprecation raised in the plugin's own files (`phpunit.xml`'s
+  `<source>`). A new test class that extends `PluginTestCase` directly needs
+  `use ReportsDeprecationsToPhpUnit;`, or the application's error handler hides its deprecations.
+  Mark a test that triggers one on purpose with `#[IgnoreDeprecations]`.
 - Optional dependencies (`Laravel\Octane`, `Backend`, `Cms`) are referenced by fully qualified
   name and checked with `class_exists()` where they may be missing.
 - Every change to per-request state needs a test that dispatches at least two requests through

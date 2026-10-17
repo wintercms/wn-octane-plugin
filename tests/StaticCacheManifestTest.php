@@ -2,6 +2,7 @@
 
 namespace Winter\Octane\Tests;
 
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use ReflectionClass;
 use Winter\Octane\Classes\ResetsRequestState;
 use System\Tests\Bootstrap\PluginTestCase;
@@ -19,6 +20,8 @@ use System\Tests\Bootstrap\PluginTestCase;
  */
 class StaticCacheManifestTest extends PluginTestCase
 {
+    use ReportsDeprecationsToPhpUnit;
+
     /**
      * Clears the reset's trait-user memo, so each test starts as a fresh worker would.
      *
@@ -248,8 +251,12 @@ class StaticCacheManifestTest extends PluginTestCase
      * separation is not "simplified" back into one manifest by someone who assumes a trait static
      * behaves like an inherited one.
      *
+     * PHP deprecates reading or writing a trait static through the trait itself, which is the act
+     * under test, so that one deprecation is expected here.
+     *
      * @return void
      */
+    #[IgnoreDeprecations]
     public function testAssigningATraitStaticDoesNotReachTheUsingClass(): void
     {
         ManifestTraitUser::seed(['seeded']);

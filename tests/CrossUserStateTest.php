@@ -53,7 +53,6 @@ class CrossUserStateTest extends PersistentWorkerTestCase
     protected function readProtected(object $target, string $property): mixed
     {
         $prop = (new \ReflectionObject($target))->getProperty($property);
-        $prop->setAccessible(true);
 
         return $prop->getValue($target);
     }
@@ -70,7 +69,6 @@ class CrossUserStateTest extends PersistentWorkerTestCase
         $this->addWorkerRoute('_worker/nav', function () use (&$seen) {
             $manager = NavigationManager::instance();
             $prop = (new \ReflectionObject($manager))->getProperty('items');
-            $prop->setAccessible(true);
 
             // What the previous request left behind.
             $seen[] = $prop->getValue($manager);
@@ -133,7 +131,6 @@ class CrossUserStateTest extends PersistentWorkerTestCase
         $this->addWorkerRoute('_worker/widgets', function () use (&$seen) {
             $manager = WidgetManager::instance();
             $prop = (new \ReflectionObject($manager))->getProperty('reportWidgets');
-            $prop->setAccessible(true);
 
             $seen[] = $prop->getValue($manager);
 
@@ -212,7 +209,6 @@ class CrossUserStateTest extends PersistentWorkerTestCase
         $this->addWorkerRoute('_worker/settings', function () use (&$seen) {
             $manager = SettingsManager::instance();
             $prop = (new \ReflectionObject($manager))->getProperty('items');
-            $prop->setAccessible(true);
 
             $seen[] = $prop->getValue($manager);
 
