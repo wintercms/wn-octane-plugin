@@ -342,6 +342,55 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
     }
 
     /**
+     * Dispatch a single request carrying the given cookies, and return the cookies its response sets.
+     *
+     * The cookies are sent as a browser would send them, so a value taken from an earlier response
+     * is still encrypted and the web middleware decrypts it. The returned values are encrypted the
+     * same way, ready to be sent back with a later request.
+     *
+     * @param string $uri
+     * @param array<string, string> $cookies Cookie values, keyed by cookie name.
+     * @param string $method
+     * @return array<string, string> The value of every cookie the response sets, keyed by name.
+     * @throws \Throwable The exception the worker reported, when the request failed.
+     */
+    protected function dispatchWorkerRequestWithCookies(string $uri, array $cookies = [], string $method = 'GET'): array
+    {
+        [$result] = $this->dispatchWorkerRequests(Request::create($uri, $method, [], $cookies));
+
+        if ($result instanceof Throwable) {
+            throw $result;
+        }
+
+        $set = [];
+        foreach ($result->headers->getCookies() as $cookie) {
+            $set[$cookie->getName()] = (string) $cookie->getValue();
+        }
+
+        return $set;
+    }
+
+    /**
+     * Encrypt a cookie value the way the web middleware encrypts the cookies it sends.
+     *
+     * For a cookie that was queued but never sent, such as one queued by a request that failed before
+     * it responded, so a test can send it back as the browser would have.
+     *
+     * @param string $name
+     * @param string $value
+     * @return string
+     */
+    protected function encryptWorkerCookie(string $name, string $value): string
+    {
+        $encrypter = $this->bootWorker()->make('encrypter');
+
+        return $encrypter->encrypt(
+            \Illuminate\Cookie\CookieValuePrefix::create($name, $encrypter->getKey()) . $value,
+            false
+        );
+    }
+
+    /**
      * Register a route on the base application, visible to every sandbox cloned from it.
      *
      * Routes are added ahead of the modules' own routes so a test route is not shadowed by the
@@ -350,9 +399,10 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
      * @param string $uri
      * @param callable $handler
      * @param string $method
+     * @param array<int, string> $middleware Middleware or middleware groups for the route, such as 'web'.
      * @return void
      */
-    protected function addWorkerRoute(string $uri, callable $handler, string $method = 'GET'): void
+    protected function addWorkerRoute(string $uri, callable $handler, string $method = 'GET', array $middleware = []): void
     {
         $router = $this->bootWorker()->make('router');
         $routes = $router->getRoutes();
@@ -363,6 +413,10 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
         }
 
         $newRoute = $router->newRoute([$method], $uri, $handler);
+
+        if ($middleware !== []) {
+            $newRoute->middleware($middleware);
+        }
 
         /*
          * RouteCollection has no prepend, so rebuild it with the test route first.
