@@ -33,6 +33,8 @@ use Throwable;
  */
 abstract class PersistentWorkerTestCase extends PluginTestCase
 {
+    use ReportsDeprecationsToPhpUnit;
+
     /**
      * @var \Illuminate\Foundation\Application|null The base application every request sandbox is
      * cloned from, once the worker has booted.

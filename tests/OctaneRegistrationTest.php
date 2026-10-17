@@ -17,6 +17,8 @@ use System\Tests\Bootstrap\PluginTestCase;
  */
 class OctaneRegistrationTest extends PluginTestCase
 {
+    use ReportsDeprecationsToPhpUnit;
+
     /**
      * The plugin's composer.json requires laravel/octane, but the plugin's files can be present
      * in an installation where composer has not run. The behavior under test only exists once
