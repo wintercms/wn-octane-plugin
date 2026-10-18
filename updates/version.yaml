@@ -1,2 +1,4 @@
 1.0.1:
     - First version of Winter.Octane. Registers Laravel Octane's service provider and resets Winter's request state at every operation boundary.
+1.1.0:
+    - Serve only Winter's public files under Swoole and RoadRunner, and reset more worker state between requests.
