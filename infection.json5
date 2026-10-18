@@ -20,9 +20,9 @@
         "text": "infection.log",
         "summary": "infection-summary.log"
     },
-    // The first run scored 92% (305 of 335 mutants killed, 5 timed out, 25 escaped). The floor sits
-    // a little below that, so new code without tests fails the run but a small change in the number
-    // of mutants does not.
-    "minMsi": 90,
-    "minCoveredMsi": 90
+    // Measured at 74% with 4 threads and 75% with 11 (335 mutants: 246 to 249 killed, 5 timed out,
+    // 81 to 84 escaped). The floor sits a few points below that, so new code without tests fails
+    // the run but a small change in the number of mutants does not.
+    "minMsi": 70,
+    "minCoveredMsi": 70
 }

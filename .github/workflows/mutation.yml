@@ -85,11 +85,12 @@ jobs:
           ../../../vendor/bin/phpunit --testsuite Octane --exclude-group soak --fail-on-skipped
           --coverage-xml="$RUNNER_TEMP/coverage/coverage-xml" --log-junit="$RUNNER_TEMP/coverage/junit.xml"
 
+      # Four threads, the runner's core count, so a run here matches a local run with the same flag.
       - name: Run Infection
         working-directory: winter/plugins/winter/octane
         run: >-
           ../../../vendor/bin/infection --configuration=infection.json5
-          --coverage="$RUNNER_TEMP/coverage" --skip-initial-tests --threads=max
+          --coverage="$RUNNER_TEMP/coverage" --skip-initial-tests --threads=4
           --no-progress --show-mutations=0
 
       - name: Show surviving mutants

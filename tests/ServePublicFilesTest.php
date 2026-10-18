@@ -20,18 +20,25 @@ class ServePublicFilesTest extends PersistentWorkerTestCase
     protected const ASSET = '/modules/system/assets/css/styles.css';
 
     /**
-     * A log file created for the test, as a request path.
+     * The files created for the test, as request paths: a log file, and PHP files in a whitelisted
+     * folder.
+     *
+     * Each name carries the process ID. Infection runs several copies of the suite against the same
+     * installation at once, and with shared names one copy's tearDown() deleted the files while
+     * another was reading them, which failed that copy for a reason unrelated to the code under test.
+     *
+     * @return array{log: string, script: string, upper: string}
      */
-    protected const LOG = '/storage/logs/winter-octane-public-files.log';
+    protected static function created(): array
+    {
+        $id = getmypid();
 
-    /**
-     * Files created for the test, as request paths: a log file, and PHP files in a whitelisted folder.
-     */
-    protected const CREATED = [
-        self::LOG,
-        '/storage/app/media/winter-octane-script.php',
-        '/storage/app/media/winter-octane-script-upper.PHP',
-    ];
+        return [
+            'log' => "/storage/logs/winter-octane-public-files-{$id}.log",
+            'script' => "/storage/app/media/winter-octane-script-{$id}.php",
+            'upper' => "/storage/app/media/winter-octane-script-upper-{$id}.PHP",
+        ];
+    }
 
     /**
      * Creates the test's files.
@@ -42,7 +49,7 @@ class ServePublicFilesTest extends PersistentWorkerTestCase
     {
         parent::setUp();
 
-        foreach (static::CREATED as $path) {
+        foreach (static::created() as $path) {
             file_put_contents(base_path($path), '<?php // created by ServePublicFilesTest');
         }
     }
@@ -54,7 +61,7 @@ class ServePublicFilesTest extends PersistentWorkerTestCase
      */
     public function tearDown(): void
     {
-        foreach (static::CREATED as $path) {
+        foreach (static::created() as $path) {
             @unlink(base_path($path));
         }
 
@@ -68,14 +75,16 @@ class ServePublicFilesTest extends PersistentWorkerTestCase
      */
     public static function privatePaths(): array
     {
+        $created = static::created();
+
         return [
             'environment file' => ['/.env'],
             'composer metadata' => ['/composer.json'],
-            'log file' => [self::LOG],
+            'log file' => [$created['log']],
             'configuration' => ['/config/app.php'],
             'front controller' => ['/index.php'],
-            'PHP file in a whitelisted folder' => ['/storage/app/media/winter-octane-script.php'],
-            'PHP file with an upper-case extension' => ['/storage/app/media/winter-octane-script-upper.PHP'],
+            'PHP file in a whitelisted folder' => [$created['script']],
+            'PHP file with an upper-case extension' => [$created['upper']],
             'dot segments out of a whitelisted folder' => ['/modules/system/assets/../../../.env'],
             'encoded dot segments' => ['/modules/system/assets/%2e%2e/%2e%2e/%2e%2e/composer.json'],
             'encoded separator' => ['/modules/system/assets%2f..%2f..%2f..%2f.env'],
@@ -119,7 +128,7 @@ class ServePublicFilesTest extends PersistentWorkerTestCase
     public function testTheWorkerServesOnlyWhitelistedFiles(): void
     {
         $private = array_values(array_filter(
-            ['/.env', '/composer.json', static::LOG, '/config/app.php', '/index.php', '/storage/app/media/winter-octane-script.php'],
+            ['/.env', '/composer.json', static::created()['log'], '/config/app.php', '/index.php', static::created()['script']],
             fn ($path) => is_file(base_path($path))
         ));
 
