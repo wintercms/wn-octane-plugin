@@ -81,7 +81,13 @@ class ProductionBootOrderTest extends PersistentWorkerTestCase
 
         if (!is_link($link)) {
             @mkdir($path . '/winter', 0755, true);
-            symlink(realpath(__DIR__ . '/..'), $link);
+
+            /*
+             * Another copy of the suite running at the same time may create the link first.
+             */
+            if (!@symlink(realpath(__DIR__ . '/..'), $link) && !is_link($link)) {
+                $this->fail('Could not create the fixture plugin link ' . $link);
+            }
         }
 
         return $path;

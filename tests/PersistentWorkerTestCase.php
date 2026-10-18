@@ -410,12 +410,12 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
      * CMS catch-all, which otherwise resolves unknown paths to a 404 page.
      *
      * @param string $uri
-     * @param callable $handler
+     * @param callable|string $handler A closure, or a controller action such as 'Class@method'.
      * @param string $method
      * @param array<int, string> $middleware Middleware or middleware groups for the route, such as 'web'.
      * @return void
      */
-    protected function addWorkerRoute(string $uri, callable $handler, string $method = 'GET', array $middleware = []): void
+    protected function addWorkerRoute(string $uri, callable|string $handler, string $method = 'GET', array $middleware = []): void
     {
         $router = $this->bootWorker()->make('router');
         $routes = $router->getRoutes();

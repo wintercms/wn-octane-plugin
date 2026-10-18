@@ -136,6 +136,39 @@ class BootStateResetTest extends PersistentWorkerTestCase
     }
 
     /**
+     * A front-end 403 after a back-end request that rendered its own error page does not render the
+     * back-end's page.
+     *
+     * Storm's dispatcher keeps each event's listeners sorted by priority once the event has been
+     * dispatched. The back-end request dispatches exception.beforeRender with its own listener in
+     * that sorted list, so restoring the boot-time listeners must also drop the sorted copy, or the
+     * next request dispatches the back-end request's listener again.
+     *
+     * @return void
+     */
+    public function testAFrontEndForbiddenPageIsUnchangedAfterABackEndErrorPage(): void
+    {
+        $this->bootWorker()->make('config')->set('app.debug', true);
+        $this->addWorkerRoute('_boot/forbidden', fn () => abort(403));
+        $this->addWorkerRoute('_boot/backend-forbidden', function () {
+            (new BackendController())->run('backend/auth/signin');
+
+            abort(403);
+        }, 'GET', ['web']);
+
+        [$before, $backend, $after] = $this->dispatchWorkerRequests(
+            Request::create('/_boot/forbidden'),
+            Request::create('/_boot/backend-forbidden'),
+            Request::create('/_boot/forbidden')
+        );
+
+        $this->assertStringContainsString('icon-lock', $this->content($backend), 'The back-end request must render the back-end access denied page.');
+        $this->assertSame(403, $after instanceof Response ? $after->getStatusCode() : null);
+        $this->assertSame($this->content($before), $this->content($after));
+        $this->assertStringNotContainsString('icon-lock', $this->content($after), 'The back-end access denied page was rendered.');
+    }
+
+    /**
      * The listener a back-end request adds still renders the back-end's error page for that request,
      * after earlier requests have had theirs removed.
      *

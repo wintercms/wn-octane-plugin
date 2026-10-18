@@ -42,11 +42,12 @@ class StartServerCommandsTest extends PluginTestCase
     protected const PRIVATE_FILES = ['/.env', '/composer.json', '/config/app.php', '/index.php'];
 
     /**
-     * A log file created for the test, as a request path.
+     * A log file created for the test, as a request path, named after the process so that copies of
+     * the suite running at once, as Infection runs them, do not delete each other's file.
      *
      * @var string
      */
-    protected string $log = '/storage/logs/winter-octane-static-files.log';
+    protected string $log = '';
 
     /**
      * Skips when laravel/octane is missing, and creates the log file.
@@ -61,6 +62,7 @@ class StartServerCommandsTest extends PluginTestCase
             $this->markTestSkipped('laravel/octane is not installed.');
         }
 
+        $this->log = '/storage/logs/winter-octane-static-files-' . getmypid() . '.log';
         file_put_contents(base_path($this->log), 'a log line');
     }
 
@@ -71,7 +73,9 @@ class StartServerCommandsTest extends PluginTestCase
      */
     public function tearDown(): void
     {
-        @unlink(base_path($this->log));
+        if ($this->log !== '') {
+            @unlink(base_path($this->log));
+        }
 
         parent::tearDown();
     }

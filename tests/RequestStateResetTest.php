@@ -19,6 +19,20 @@ class FrontEndAuthManager extends \Winter\Storm\Auth\Manager
 }
 
 /**
+ * A controller for a route whose request fails after the kernel has answered it.
+ */
+class FailedRequestController extends \Illuminate\Routing\Controller
+{
+    /**
+     * @return string
+     */
+    public function index(): string
+    {
+        return 'ok';
+    }
+}
+
+/**
  * State produced by one operation must not be visible to the next.
  *
  * These run through Octane's real ApplicationGateway against a single application instance, so a
@@ -763,5 +777,85 @@ class RequestStateResetTest extends PersistentWorkerTestCase
             $gates,
             'state left behind by a failed operation must still be cleared for the next one'
         );
+    }
+
+    /**
+     * Code that holds the base container, such as the CMS error handler, sees each request's execution
+     * context rather than the first one that asked through the base container.
+     *
+     * Octane gives the base container each request too, so an execution context resolved through it is
+     * derived from that request and then cached on the base container, which every later sandbox is
+     * cloned from.
+     *
+     * @return void
+     */
+    public function testTheBaseContainerRederivesTheExecutionContextForEachRequest(): void
+    {
+        $base = $this->bootWorker();
+        $seen = [];
+
+        $backendUri = trim((string) $this->app['config']->get('cms.backendUri', 'backend'), '/');
+
+        $this->addWorkerRoute('_worker/base-context', function () use ($base, &$seen) {
+            $seen[] = $base->runningInBackend();
+
+            return 'ok';
+        });
+        $this->addWorkerRoute($backendUri . '/_worker/base-context', function () use ($base, &$seen) {
+            $seen[] = $base->runningInBackend();
+
+            return 'ok';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/' . $backendUri . '/_worker/base-context', 'GET'),
+            Request::create('/_worker/base-context', 'GET')
+        );
+
+        $this->assertSame(
+            [true, false],
+            $seen,
+            'the base container must not keep the back-end context of the request before'
+        );
+    }
+
+    /**
+     * A request that fails after the kernel answered it does not leave its controller on its route.
+     *
+     * Octane drops the route's controller in ApplicationGateway::terminate(), which a failure that
+     * escapes to the worker skips, so the controller instance would stay attached to the route for
+     * the rest of the worker's life. The reset on WorkerErrorOccurred drops it straight away, and the
+     * next request's reset would drop it if that one did not.
+     *
+     * @return void
+     */
+    public function testAFailedRequestDoesNotLeaveItsControllerOnItsRoute(): void
+    {
+        $app = $this->bootWorker();
+
+        $this->addWorkerRoute('_worker/after-controller', fn () => 'ok');
+        $this->addWorkerRoute('_worker/controller', FailedRequestController::class . '@index');
+
+        $route = null;
+        $controller = null;
+
+        $app['events']->listen(\Laravel\Octane\Events\RequestHandled::class, function ($event) use (&$route, &$controller) {
+            if ($event->request->path() === '_worker/controller') {
+                $route = $event->request->route();
+                $controller = $route->controller;
+
+                throw new RuntimeException('failure after the kernel answered');
+            }
+        });
+
+        [$failed] = $this->dispatchWorkerRequests(Request::create('/_worker/controller', 'GET'));
+
+        $this->assertInstanceOf(RuntimeException::class, $failed, 'the request must fail after the kernel answered it');
+        $this->assertInstanceOf(\Illuminate\Routing\Route::class, $route);
+        $this->assertInstanceOf(FailedRequestController::class, $controller, 'the route must have held its controller when the request failed');
+
+        $this->dispatchWorkerRequests(Request::create('/_worker/after-controller', 'GET'));
+
+        $this->assertNull($route->controller, 'the failed request\'s controller must not stay on its route');
     }
 }
