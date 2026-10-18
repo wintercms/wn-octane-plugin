@@ -69,11 +69,14 @@ class ProductionBootOrderTest extends PersistentWorkerTestCase
     /**
      * A plugins directory holding a single symlink to this plugin, created on first use.
      *
+     * Named after this checkout's path, so two checkouts on one machine never share a link that
+     * points at the other one's code.
+     *
      * @return string
      */
     protected function fixturePluginsPath(): string
     {
-        $path = sys_get_temp_dir() . '/winter-octane-boot-order-plugins';
+        $path = sys_get_temp_dir() . '/winter-octane-boot-order-plugins-' . md5((string) realpath(__DIR__ . '/..'));
         $link = $path . '/winter/octane';
 
         if (!is_link($link)) {

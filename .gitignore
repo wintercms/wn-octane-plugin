@@ -2,3 +2,5 @@
 /vendor/
 clarity-report.md
 phpstan.phar
+infection.log
+infection-summary.log

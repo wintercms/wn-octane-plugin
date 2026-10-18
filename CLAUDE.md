@@ -45,7 +45,14 @@ php artisan winter:up
 Run these from `plugins/winter/octane`:
 
 - Tests: `../../../vendor/bin/phpunit --testsuite Octane --fail-on-skipped`
-- End-to-end test (starts a real FrankenPHP server): `WINTER_OCTANE_E2E=1 ../../../vendor/bin/phpunit --testsuite E2e --fail-on-skipped`
+- End-to-end tests (start a real FrankenPHP server): `WINTER_OCTANE_E2E=1 ../../../vendor/bin/phpunit --testsuite E2e --exclude-group swoole --fail-on-skipped`.
+  Set `WINTER_OCTANE_E2E_SERVER=swoole` (needs the swoole extension; drop `--exclude-group swoole`) or
+  `roadrunner` (needs `spiral/roadrunner-http`, `spiral/roadrunner-cli` and an `rr` binary) for the other servers
+- Soak test only (several hundred mixed requests, also part of the Octane suite): `../../../vendor/bin/phpunit --group soak`;
+  `WINTER_OCTANE_SOAK_CYCLES` runs more cycles
+- Mutation tests (needs pcov and `infection/infection` in the Winter project; see `.github/workflows/mutation.yml`):
+  collect coverage with `php -d pcov.enabled=1 -d pcov.directory=. ../../../vendor/bin/phpunit --testsuite Octane --exclude-group soak --coverage-xml=/path/coverage/coverage-xml --log-junit=/path/coverage/junit.xml`,
+  then `../../../vendor/bin/infection --configuration=infection.json5 --coverage=/path/coverage --skip-initial-tests`
 - One test: `../../../vendor/bin/phpunit --filter testName`
 - Code style: `../../../vendor/bin/phpcs --standard=phpcs.xml.dist`, fix with `../../../vendor/bin/phpcbf --standard=phpcs.xml.dist`
 - Static analysis: `../../../vendor/bin/phpstan analyse -c phpstan.neon.dist --memory-limit=1G`
