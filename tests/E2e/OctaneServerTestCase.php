@@ -2,33 +2,42 @@
 
 namespace Winter\Octane\Tests\E2e;
 
-use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Serves the surrounding Winter installation through a REAL Octane server and checks that state
- * planted by one HTTP request is gone by the next.
+ * Starts the surrounding Winter installation under a REAL Octane server with one worker, and talks
+ * to it over HTTP.
  *
- * Everything else in this suite runs in-process. This test is the end of the chain: it starts
- * `php artisan octane:start --server=frankenphp` with one worker, plants state through a real HTTP
- * request (a Twig include gate, a shared view variable, a CMS code-parser cache entry), and reads
- * it back through a second request served by the same worker process. A leak here is a leak in
- * production, with no test double anywhere in the path.
+ * Everything outside tests/E2e runs in-process. These tests are the end of the chain: the server,
+ * its worker loop and its cookie handling are the production ones, with no test double anywhere in
+ * the path. One worker means every request reaches the same worker process, which each test checks
+ * through the process ID the diagnostic routes report.
  *
- * The diagnostic routes come from the plugin's routes.php and only exist when WINTER_OCTANE_SMOKE
- * is set, which this test sets for the server process it spawns.
+ * The diagnostic routes come from the plugin's routes.php and only exist when WINTER_OCTANE_SMOKE is
+ * set, which this class sets for the server process it starts.
  *
- * Opt-in: set WINTER_OCTANE_E2E=1 (CI does). FrankenPHP's binary is downloaded by Octane on first
- * start, so the first run needs the network; the test skips, with the server log attached, when
- * the server cannot come up.
+ * Opt-in: set WINTER_OCTANE_E2E=1 (CI does). WINTER_OCTANE_E2E_SERVER picks the server: frankenphp
+ * (the default), swoole or roadrunner. Swoole needs the swoole extension, and RoadRunner needs the
+ * spiral/roadrunner-http and spiral/roadrunner-cli packages and an `rr` binary in the project root or
+ * on the PATH. FrankenPHP's binary is downloaded by Octane on first start, so the first run needs the
+ * network. A test skips, with the server log attached, when the server cannot come up.
  */
-#[Group('e2e')]
-class FrankenPhpSmokeTest extends TestCase
+abstract class OctaneServerTestCase extends TestCase
 {
+    /**
+     * The servers these tests can start.
+     */
+    protected const SERVERS = ['frankenphp', 'swoole', 'roadrunner'];
+
     /**
      * @var resource|null The octane:start process.
      */
     protected $serverProcess = null;
+
+    /**
+     * @var string The server under test.
+     */
+    protected string $server = '';
 
     /**
      * @var string Absolute path to the Winter installation the plugin sits in.
@@ -63,6 +72,14 @@ class FrankenPhpSmokeTest extends TestCase
             $this->markTestSkipped('End-to-end test is opt-in; set WINTER_OCTANE_E2E=1 to run it.');
         }
 
+        $server = getenv('WINTER_OCTANE_E2E_SERVER') ?: 'frankenphp';
+
+        if (!in_array($server, static::SERVERS, true)) {
+            $this->fail('WINTER_OCTANE_E2E_SERVER must be one of ' . implode(', ', static::SERVERS) . ", not {$server}.");
+        }
+
+        $this->server = $server;
+
         $winterRoot = realpath(__DIR__ . '/../../../../..');
 
         if ($winterRoot === false || !file_exists($winterRoot . '/.env')) {
@@ -86,110 +103,39 @@ class FrankenPhpSmokeTest extends TestCase
     }
 
     /**
-     * State planted by one HTTP request is gone when the same worker process serves the next one.
-     *
-     * @return void
-     */
-    public function testStatePlantedByOneRequestIsGoneByTheNext(): void
-    {
-        $this->startServer();
-
-        $baseline = $this->get('/_octane-smoke/read');
-
-        $this->assertFalse($baseline['twig_gate_open'], 'the include gate should start closed');
-        $this->assertFalse($baseline['view_leak_present'], 'no smoke share should exist yet');
-        $this->assertFalse($baseline['code_parser_dirty'], 'the parser cache should start clean');
-
-        $planted = $this->get('/_octane-smoke/plant');
-        $this->assertTrue($planted['planted']);
-
-        $after = $this->get('/_octane-smoke/read');
-
-        $this->assertSame(
-            $baseline['pid'],
-            $after['pid'],
-            'the follow-up request was served by a different worker process, so this run proves '
-            . 'nothing about cross-request state; with --workers=1 that means the worker crashed'
-        );
-
-        $this->assertFalse(
-            $after['twig_gate_open'],
-            'the Twig include gate planted by the previous request survived into this one'
-        );
-        $this->assertFalse(
-            $after['view_leak_present'],
-            'the view share planted by the previous request survived into this one'
-        );
-        $this->assertFalse(
-            $after['code_parser_dirty'],
-            'the code parser cache planted by the previous request survived into this one'
-        );
-    }
-
-    /**
-     * Winter serves from the project root, so the server must only serve Winter's whitelisted asset
-     * paths as files. Octane's own Caddyfile served any file and ran any PHP file in the project.
-     *
-     * @return void
-     */
-    public function testOnlyWhitelistedFilesAreServed(): void
-    {
-        $this->startServer();
-
-        /*
-         * A path that does not exist shows how the application answers. A sensitive path must get the
-         * same status, which an executed PHP file (200 or 500) or a served file (200) would not.
-         */
-        [$notFoundStatus] = $this->fetch('/winter-octane-no-such-page');
-
-        $leaks = [
-            '/.env' => 'APP_KEY',
-            '/composer.json' => '"require"',
-            '/artisan' => 'Artisan',
-            '/config/app.php' => 'Fatal error',
-            '/plugins/winter/octane/Plugin.php' => 'Fatal error',
-            '/modules/system/assets/../../../.env' => 'APP_KEY',
-            '/modules/system/assets/%2e%2e/%2e%2e/%2e%2e/.env' => 'APP_KEY',
-            '/modules/system/assets/..%2f..%2f..%2fcomposer.json' => '"require"',
-            '/storage/app/media/../../../composer.json' => '"require"',
-            '/modules/system/assets/../../../config/app.php' => 'Fatal error',
-        ];
-
-        foreach ($leaks as $path => $marker) {
-            [$status, $body] = $this->fetchRaw($path);
-            $message = "{$path} was served or executed directly instead of going to the application";
-
-            $this->assertSame($notFoundStatus, $status, $message);
-            $this->assertStringNotContainsString($marker, (string) $body, $message);
-        }
-
-        [$status, $body] = $this->fetch('/modules/system/assets/js/framework.js');
-        $this->assertSame(200, $status, 'module assets must still be served as files');
-        $this->assertStringContainsString('function', (string) $body);
-    }
-
-    /**
-     * Start octane:start with a single FrankenPHP worker and wait until it accepts connections.
+     * Start octane:start with a single worker and wait until the worker answers.
      *
      * @return void
      */
     protected function startServer(): void
     {
-        $this->ensureWorkerStubSuitsWinter();
+        if ($this->server === 'frankenphp') {
+            $this->ensureWorkerStubSuitsWinter();
+        }
 
         $this->port = $this->findFreePort();
-        $this->serverLog = tempnam(sys_get_temp_dir(), 'octane-smoke-') . '.log';
+        $this->serverLog = (string) tempnam(sys_get_temp_dir(), 'octane-e2e-');
 
         $command = [
             PHP_BINARY,
             'artisan',
             'octane:start',
-            '--server=frankenphp',
+            '--server=' . $this->server,
             '--host=127.0.0.1',
             '--port=' . $this->port,
             '--workers=1',
             '--no-interaction',
         ];
+
+        if ($this->server === 'swoole') {
+            $command[] = '--task-workers=1';
+        }
+        elseif ($this->server === 'roadrunner') {
+            $command[] = '--rpc-port=' . $this->findFreePort();
+        }
+        else {
+            // FrankenPHP takes no extra options.
+        }
 
         /*
          * The PHPUnit process carries test-harness variables (APP_ENV=testing and friends from
@@ -225,7 +171,7 @@ class FrankenPhpSmokeTest extends TestCase
         }
 
         /*
-         * Generous ceiling: the very first start downloads the FrankenPHP binary.
+         * Generous ceiling: the very first FrankenPHP start downloads the binary.
          */
         $deadline = time() + 180;
 
@@ -234,15 +180,15 @@ class FrankenPhpSmokeTest extends TestCase
 
             if (!$status['running']) {
                 $this->markTestSkipped(
-                    "octane:start exited before the server came up (needs network on first run "
-                    . "to download FrankenPHP). Log tail:\n" . $this->logTail()
+                    "octane:start --server={$this->server} exited before the server came up (FrankenPHP "
+                    . "needs the network on its first run). Log tail:\n" . $this->logTail()
                 );
             }
 
             /*
              * A TCP accept only proves the server process is listening; the worker behind it can
              * still be booting, and a request in that window gets an error response. Readiness is
-             * an actual 200 from the health of the diagnostic route.
+             * an actual 200 from the diagnostic route.
              */
             [$httpStatus] = $this->fetch('/_octane-smoke/read');
 
@@ -265,12 +211,8 @@ class FrankenPhpSmokeTest extends TestCase
      */
     protected function stopServer(): void
     {
-        if ($this->winterRoot !== '') {
-            @exec(sprintf(
-                'cd %s && %s artisan octane:stop --server=frankenphp >/dev/null 2>&1',
-                escapeshellarg($this->winterRoot),
-                escapeshellarg(PHP_BINARY)
-            ));
+        if ($this->serverProcess !== null) {
+            $this->artisan(['octane:stop', '--server=' . $this->server]);
         }
 
         if (is_resource($this->serverProcess)) {
@@ -282,10 +224,15 @@ class FrankenPhpSmokeTest extends TestCase
         if ($this->port > 0) {
             @exec(sprintf('lsof -ti :%d 2>/dev/null | xargs kill 2>/dev/null', $this->port));
         }
+
+        if ($this->serverLog !== '') {
+            @unlink($this->serverLog);
+            $this->serverLog = '';
+        }
     }
 
     /**
-     * Fetch a smoke route and decode its JSON.
+     * Fetch a diagnostic route and decode its JSON.
      *
      * @param string $path
      * @return array<string, mixed>
@@ -307,7 +254,7 @@ class FrankenPhpSmokeTest extends TestCase
         $this->assertIsArray($decoded, sprintf(
             "GET %s did not return JSON. Body:\n%s",
             $path,
-            substr($body, 0, 500)
+            substr((string) $body, 0, 500)
         ));
 
         return $decoded;
@@ -375,25 +322,167 @@ class FrankenPhpSmokeTest extends TestCase
      * would hide a traversal the server lets through.
      *
      * @param string $path
-     * @return array{0: int|null, 1: string} HTTP status (null when no response) and body.
+     * @param string $method
+     * @param list<string> $headers Extra request headers, such as "Range: bytes=0-9".
+     * @return array{0: int|null, 1: string, 2: string} HTTP status (null when no response), body,
+     * and the response's header block.
      */
-    protected function fetchRaw(string $path): array
+    protected function fetchRaw(string $path, string $method = 'GET', array $headers = []): array
     {
         $socket = @stream_socket_client('tcp://127.0.0.1:' . $this->port, $errorCode, $errorMessage, 10);
 
         if ($socket === false) {
-            return [null, ''];
+            return [null, '', ''];
+        }
+
+        $extra = '';
+        foreach ($headers as $header) {
+            $extra .= $header . "\r\n";
         }
 
         stream_set_timeout($socket, 10);
-        fwrite($socket, "GET {$path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+        fwrite($socket, "{$method} {$path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{$extra}Connection: close\r\n\r\n");
         $response = (string) stream_get_contents($socket);
         fclose($socket);
 
         [$head, $body] = array_pad(explode("\r\n\r\n", $response, 2), 2, '');
         $status = preg_match('#^HTTP/\S+\s(\d{3})#', $head, $matches) ? (int) $matches[1] : null;
 
-        return [$status, $body];
+        if (preg_match('#^Transfer-Encoding:\s*chunked#mi', $head)) {
+            $body = $this->decodeChunked($body);
+        }
+
+        return [$status, $body, $head];
+    }
+
+    /**
+     * Join the chunks of a chunked response body.
+     *
+     * @param string $body
+     * @return string
+     */
+    protected function decodeChunked(string $body): string
+    {
+        $decoded = '';
+
+        while (preg_match('#^([0-9a-fA-F]+)[^\r\n]*\r\n#', $body, $matches)) {
+            $length = (int) hexdec($matches[1]);
+
+            if ($length === 0) {
+                break;
+            }
+
+            $decoded .= substr($body, strlen($matches[0]), $length);
+            $body = substr($body, strlen($matches[0]) + $length + 2);
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Send a request as a browser with the given cookie jar would, without following redirects, and
+     * update the jar from the response's Set-Cookie headers.
+     *
+     * @param string $method
+     * @param string $path
+     * @param array<string, string> $jar The browser's cookies, keyed by name.
+     * @param array<string, string> $form Form fields to post.
+     * @return array{status: int|null, headers: list<string>, body: string, set: array<string, string>}
+     * The status (null when no response), the raw response headers, the body, and the cookies the
+     * response set.
+     */
+    protected function browse(string $method, string $path, array &$jar, array $form = []): array
+    {
+        $headers = [];
+
+        if ($jar !== []) {
+            $pairs = [];
+            foreach ($jar as $name => $value) {
+                $pairs[] = $name . '=' . $value;
+            }
+            $headers[] = 'Cookie: ' . implode('; ', $pairs);
+        }
+
+        $content = '';
+
+        if ($form !== []) {
+            $content = http_build_query($form);
+            $headers[] = 'Content-Type: application/x-www-form-urlencoded';
+        }
+
+        $context = stream_context_create(['http' => [
+            'method' => $method,
+            'header' => implode("\r\n", $headers),
+            'content' => $content,
+            'timeout' => 10,
+            'ignore_errors' => true,
+            'follow_location' => 0,
+        ]]);
+
+        $body = @file_get_contents('http://127.0.0.1:' . $this->port . $path, false, $context);
+        $responseHeaders = $http_response_header ?? [];
+
+        $status = null;
+        $set = [];
+
+        foreach ($responseHeaders as $header) {
+            if (preg_match('#^HTTP/\S+\s(\d{3})#', $header, $matches)) {
+                $status = (int) $matches[1];
+            }
+            elseif (preg_match('#^Set-Cookie:\s*([^=;\s]+)=([^;]*)(.*)$#i', $header, $matches)) {
+                $set[$matches[1]] = $matches[2];
+
+                /*
+                 * A cookie set to an empty value or with an expiry in the past is the server deleting
+                 * it, as a browser would.
+                 */
+                if ($matches[2] === '' || $matches[2] === 'deleted' || preg_match('#max-age=0\b#i', $matches[3])) {
+                    unset($jar[$matches[1]]);
+                }
+                else {
+                    $jar[$matches[1]] = $matches[2];
+                }
+            }
+            else {
+                // Any other header is not needed here.
+            }
+        }
+
+        return ['status' => $status, 'headers' => $responseHeaders, 'body' => (string) $body, 'set' => $set];
+    }
+
+    /**
+     * Run an artisan command in the Winter installation, as the server's own environment would.
+     *
+     * @param list<string> $arguments
+     * @return string The command's combined output.
+     */
+    protected function artisan(array $arguments): string
+    {
+        $environment = getenv();
+
+        unset(
+            $environment['APP_ENV'],
+            $environment['APP_RUNNING_IN_CONSOLE'],
+            $environment['CACHE_DRIVER'],
+            $environment['SESSION_DRIVER']
+        );
+
+        $process = proc_open(
+            array_merge([PHP_BINARY, 'artisan'], $arguments, ['--no-interaction']),
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]],
+            $pipes,
+            $this->winterRoot,
+            $environment
+        );
+
+        $this->assertIsResource($process, 'could not run artisan ' . implode(' ', $arguments));
+
+        $output = (string) stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        proc_close($process);
+
+        return $output;
     }
 
     /**

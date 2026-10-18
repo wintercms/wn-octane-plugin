@@ -58,6 +58,12 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
     protected array $workerResults = [];
 
     /**
+     * @var array<int, int> How many output buffers each request of the most recent
+     * dispatchWorkerRequests() call left open, in order, before they were closed again.
+     */
+    protected array $workerBufferDepths = [];
+
+    /**
      * Prepares the application the way a worker process starts, and skips when laravel/octane is
      * missing.
      *
@@ -124,6 +130,7 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
         $this->worker = null;
         $this->workerClient = null;
         $this->workerResults = [];
+        $this->workerBufferDepths = [];
 
         parent::tearDown();
     }
@@ -292,6 +299,7 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
     {
         $this->bootWorker();
         $this->workerResults = [];
+        $this->workerBufferDepths = [];
 
         foreach ($requests as $request) {
             $errorsBefore = count($this->workerClient->errors);
@@ -305,6 +313,8 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
             $bufferLevel = ob_get_level();
 
             $this->worker->handle($request, new \Laravel\Octane\RequestContext([]));
+
+            $this->workerBufferDepths[] = ob_get_level() - $bufferLevel;
 
             while (ob_get_level() > $bufferLevel) {
                 ob_end_clean();

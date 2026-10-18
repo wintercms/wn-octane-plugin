@@ -1,0 +1,28 @@
+{
+    "$schema": "../../../vendor/infection/infection/resources/schema.json",
+    // The reset and the plugin's registration: the code whose every line must be needed by a test.
+    "source": {
+        "directories": ["."],
+        "excludes": [".github", "caddy", "console", "contracts", "tests", "updates", "vendor", "routes.php"]
+    },
+    // Winter's class loader, not Composer's, loads the modules' classes, which Infection reads while
+    // it builds the mutants.
+    "bootstrap": "tests/bootstrap.php",
+    "phpUnit": {
+        "configDir": ".",
+        "customPath": "../../../vendor/bin/phpunit"
+    },
+    // The soak test covers nearly every line of the reset, so it would run for every mutant and
+    // take most of the time, while the two-request tests it repeats already kill the same mutants.
+    "testFrameworkOptions": "--testsuite=Octane --exclude-group=soak",
+    "timeout": 60,
+    "logs": {
+        "text": "infection.log",
+        "summary": "infection-summary.log"
+    },
+    // The first run scored 92% (305 of 335 mutants killed, 5 timed out, 25 escaped). The floor sits
+    // a little below that, so new code without tests fails the run but a small change in the number
+    // of mutants does not.
+    "minMsi": 90,
+    "minCoveredMsi": 90
+}

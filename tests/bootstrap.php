@@ -10,3 +10,4 @@ require __DIR__ . '/../../../../modules/system/tests/bootstrap/app.php';
 require_once __DIR__ . '/DeprecationForwarder.php';
 require_once __DIR__ . '/ReportsDeprecationsToPhpUnit.php';
 require_once __DIR__ . '/PersistentWorkerTestCase.php';
+require_once __DIR__ . '/E2e/OctaneServerTestCase.php';

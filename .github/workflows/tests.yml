@@ -98,8 +98,113 @@ jobs:
         working-directory: winter/plugins/winter/octane
         run: ../../../vendor/bin/phpunit --testsuite Octane --fail-on-skipped
 
-      - name: Run end-to-end smoke test (real FrankenPHP server)
+      # Octane downloads FrankenPHP through an unauthenticated GitHub API call when the project root
+      # has no binary, and the matrix jobs together exceed that rate limit. Downloading it here with
+      # the job's token avoids the call. Pinned so every job tests the same server; bump the version
+      # here to move to a newer FrankenPHP. Octane's requiredFrankenPhpVersion (1.13.0 in Octane
+      # 2.22) must stay at or below this pin, or octane:start tries to download a newer binary.
+      - name: Download FrankenPHP
+        working-directory: winter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FRANKENPHP_VERSION: v1.13.1
+        run: |
+          gh release download "$FRANKENPHP_VERSION" --repo php/frankenphp --pattern frankenphp-linux-x86_64 --output frankenphp
+          chmod +x frankenphp
+          ./frankenphp --version
+
+      # The swoole group needs Swoole's task worker, so it runs in the servers job below.
+      - name: Run end-to-end tests (real FrankenPHP server)
         working-directory: winter/plugins/winter/octane
         env:
           WINTER_OCTANE_E2E: '1'
-        run: ../../../vendor/bin/phpunit --testsuite E2e --fail-on-skipped
+        run: ../../../vendor/bin/phpunit --testsuite E2e --exclude-group swoole --fail-on-skipped
+
+  # The end-to-end tests under the other two servers Octane supports. FrankenPHP embeds its own PHP,
+  # so the job above tests one PHP version whatever the matrix says; these servers run the worker on
+  # the PHP setup-php installs.
+  servers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - server: swoole
+            extensions: mbstring, intl, gd, xml, zip, pdo_sqlite, sqlite3, swoole
+            phpunit-args: ''
+          - server: roadrunner
+            extensions: mbstring, intl, gd, xml, zip, pdo_sqlite, sqlite3, sockets
+            phpunit-args: --exclude-group swoole
+    name: End-to-end (${{ matrix.server }})
+    steps:
+      - name: Checkout Winter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: wintercms/winter
+          ref: wip/1.3
+          path: winter
+
+      - name: Checkout Storm
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: wintercms/storm
+          ref: wip/1.3
+          path: storm
+
+      - name: Checkout plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: winter/plugins/winter/octane
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          extensions: ${{ matrix.extensions }}
+          coverage: none
+
+      - name: Install dependencies
+        working-directory: winter
+        run: |
+          composer install --no-interaction --no-progress
+          composer require "laravel/octane:^2.5" --no-interaction --no-progress --with-all-dependencies
+
+      # The packages octane:install asks for, and the rr binary in the project root, where Octane
+      # looks for it. The binary is downloaded with the job's token rather than through an
+      # unauthenticated GitHub API call, and pinned so every run tests the same server.
+      - name: Install RoadRunner
+        if: matrix.server == 'roadrunner'
+        working-directory: winter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RR_VERSION: '2025.1.15'
+        run: |
+          composer require "spiral/roadrunner-http:^3.3.0" "spiral/roadrunner-cli:^2.6.0" --no-interaction --no-progress --with-all-dependencies
+          gh release download "v$RR_VERSION" --repo roadrunner-server/roadrunner --pattern "roadrunner-$RR_VERSION-linux-amd64.tar.gz" --output rr.tar.gz
+          tar -xzf rr.tar.gz --strip-components=1 "roadrunner-$RR_VERSION-linux-amd64/rr"
+          rm rr.tar.gz
+          ./rr --version
+
+      - name: Use the checked-out modules and storm
+        working-directory: winter
+        run: |
+          git checkout -- modules
+          rm -rf vendor/winter/storm
+          ln -s "$GITHUB_WORKSPACE/storm" vendor/winter/storm
+
+      - name: Prepare application
+        working-directory: winter
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          touch storage/database.sqlite
+          sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=sqlite/' .env
+          sed -i 's|^DB_DATABASE=.*|DB_DATABASE=storage/database.sqlite|' .env
+          php artisan winter:up
+
+      - name: Run end-to-end tests (real ${{ matrix.server }} server)
+        working-directory: winter/plugins/winter/octane
+        env:
+          WINTER_OCTANE_E2E: '1'
+          WINTER_OCTANE_E2E_SERVER: ${{ matrix.server }}
+        run: ../../../vendor/bin/phpunit --testsuite E2e ${{ matrix.phpunit-args }} --fail-on-skipped

@@ -12,3 +12,4 @@
 /phpstan.neon.dist export-ignore
 /phpstan-bootstrap.php export-ignore
 /phpunit.xml export-ignore
+/infection.json5 export-ignore

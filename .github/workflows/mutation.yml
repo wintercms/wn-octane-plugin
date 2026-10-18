@@ -1,0 +1,98 @@
+name: Mutation tests
+
+# Infection changes the reset and the plugin's registration one small edit at a time and runs the
+# tests that cover each edit. An edit no test notices is a line that could be broken or removed, by
+# this plugin or by a change in core, without CI going red. It takes too long to run on every pull
+# request, so it runs weekly and on demand. infection.json5 sets the minimum score.
+on:
+  schedule:
+    - cron: '43 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  infection:
+    runs-on: ubuntu-latest
+    name: Infection
+    steps:
+      - name: Checkout Winter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: wintercms/winter
+          ref: wip/1.3
+          path: winter
+
+      - name: Checkout Storm
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: wintercms/storm
+          ref: wip/1.3
+          path: storm
+
+      - name: Checkout plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: winter/plugins/winter/octane
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          extensions: mbstring, intl, gd, xml, zip, pdo_sqlite, sqlite3
+          coverage: pcov
+
+      # Infection is installed into the Winter project, as larastan is in the tests workflow, so the
+      # plugin's composer.json does not require it. Its extension installer is a Composer plugin the
+      # project does not need, so it is not allowed to run.
+      - name: Install dependencies
+        working-directory: winter
+        run: |
+          composer install --no-interaction --no-progress
+          composer require "laravel/octane:^2.5" --no-interaction --no-progress --with-all-dependencies
+          composer config --no-plugins allow-plugins.infection/extension-installer false
+          composer require --dev "infection/infection:^0.35" --no-interaction --no-progress --with-all-dependencies
+
+      - name: Use the checked-out modules and storm
+        working-directory: winter
+        run: |
+          git checkout -- modules
+          rm -rf vendor/winter/storm
+          ln -s "$GITHUB_WORKSPACE/storm" vendor/winter/storm
+
+      - name: Prepare application
+        working-directory: winter
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          touch storage/database.sqlite
+          sed -i 's/^DB_CONNECTION=.*/DB_CONNECTION=sqlite/' .env
+          sed -i 's|^DB_DATABASE=.*|DB_DATABASE=storage/database.sqlite|' .env
+          php artisan winter:up
+
+      # Infection stops its own first run of the suite at the first line on stderr, and Octane writes
+      # every exception a worker reports to stderr under the testing environment, which several tests
+      # cause on purpose. The coverage is collected here instead and handed to Infection.
+      - name: Collect coverage
+        working-directory: winter/plugins/winter/octane
+        run: >-
+          php -d pcov.enabled=1 -d pcov.directory="$PWD"
+          ../../../vendor/bin/phpunit --testsuite Octane --exclude-group soak --fail-on-skipped
+          --coverage-xml="$RUNNER_TEMP/coverage/coverage-xml" --log-junit="$RUNNER_TEMP/coverage/junit.xml"
+
+      - name: Run Infection
+        working-directory: winter/plugins/winter/octane
+        run: >-
+          ../../../vendor/bin/infection --configuration=infection.json5
+          --coverage="$RUNNER_TEMP/coverage" --skip-initial-tests --threads=max
+          --no-progress --show-mutations=0
+
+      - name: Show surviving mutants
+        if: always()
+        working-directory: winter/plugins/winter/octane
+        run: cat infection.log || true
