@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Log;
 use System\Classes\PluginManager;
 use System\Twig\Loader as TwigLoader;
 use Throwable;
+use Winter\Octane\Contracts\KeepsWorkerCacheValues;
 use Winter\Octane\Contracts\ResetsWorkerState;
 use Winter\Storm\Database\MemoryCache as QueryMemoryCache;
 use Winter\Storm\Halcyon\MemoryCacheManager;
@@ -92,7 +93,11 @@ class ResetsRequestState
     {
         return [
             fn () => $this->forgetExecutionContext($base, $sandbox),
-            fn () => $this->resetCoreState(),
+            /*
+             * The worker-error path keeps no cache value, so no plugin code runs inside the worker
+             * loop's catch block for it. The next operation's reset starts from an empty cache.
+             */
+            fn () => $this->resetCoreState($throwOnPluginFailure),
             fn () => $this->resetManagers($base, $sandbox),
             fn () => $this->resetStaticCaches(),
             fn () => $this->restoreMassAssignmentGuard(),
@@ -180,11 +185,12 @@ class ResetsRequestState
     /**
      * Reset framework-level state held outside the managers.
      *
+     * @param bool $keepCacheValues Whether plugins may keep in-memory cache values.
      * @return void
      */
-    protected function resetCoreState(): void
+    protected function resetCoreState(bool $keepCacheValues = true): void
     {
-        $this->flushHalcyonRequestCache();
+        $this->flushHalcyonRequestCache($keepCacheValues ? $this->cacheValueKeepers() : []);
 
         /*
          * Storm caches duplicate queries for the rest of the process, and only a write made through
@@ -209,9 +215,10 @@ class ResetsRequestState
      * so both managers are flushed. Only the in-memory layer is cleared; the external stores they
      * wrap keep their own invalidation rules.
      *
+     * @param array<string, object> $keepers Plugins that may keep cache values, from cacheValueKeepers().
      * @return void
      */
-    protected function flushHalcyonRequestCache(): void
+    protected function flushHalcyonRequestCache(array $keepers = []): void
     {
         $managers = [];
 
@@ -245,10 +252,141 @@ class ResetsRequestState
 
             foreach ((new \ReflectionProperty($manager, 'stores'))->getValue($manager) as $store) {
                 if ($store instanceof MemoryRepository) {
-                    $store->flushInternalCache();
+                    $this->flushMemoryRepository($store, $keepers);
                 }
             }
         }
+    }
+
+    /**
+     * The loaded plugins that declare keepWorkerCacheValue(), keyed by plugin identifier.
+     *
+     * A plugin qualifies by implementing KeepsWorkerCacheValues or by declaring the method, as with
+     * resetWorkerState(), so a plugin can keep cache values without depending on this one.
+     *
+     * @return array<string, object>
+     */
+    protected function cacheValueKeepers(): array
+    {
+        $keepers = [];
+
+        foreach (PluginManager::instance()->getPlugins() as $identifier => $plugin) {
+            if (is_object($plugin)
+                && ($plugin instanceof KeepsWorkerCacheValues || method_exists($plugin, 'keepWorkerCacheValue'))
+            ) {
+                $keepers[$identifier] = $plugin;
+            }
+        }
+
+        return $keepers;
+    }
+
+    /**
+     * Empty a store's in-memory layer, except for the values a plugin asks to keep.
+     *
+     * A kept value is shared by every later request the worker serves, so only nulls, scalars and
+     * arrays of them are kept. An object would be the same instance in each request, and one
+     * request's change to it would reach the next. A value that a store's driver serialized
+     * itself is a string here, and is unserialized into a new object on each read.
+     *
+     * The plugin that keeps a value is responsible for dropping it when the external store changes,
+     * for example by forgetting the key or by no longer accepting it.
+     *
+     * @param \Winter\Storm\Halcyon\MemoryRepository $store
+     * @param array<string, object> $keepers Plugins that may keep cache values, from cacheValueKeepers().
+     * @return void
+     */
+    protected function flushMemoryRepository(MemoryRepository $store, array $keepers): void
+    {
+        if ($keepers === []) {
+            $store->flushInternalCache();
+
+            return;
+        }
+
+        if (!property_exists(MemoryRepository::class, 'cache')) {
+            $this->warnOnce('Winter.Octane: Halcyon\\MemoryRepository::$cache no longer exists, so no in-memory cache value is kept between requests.');
+            $store->flushInternalCache();
+
+            return;
+        }
+
+        $property = new \ReflectionProperty(MemoryRepository::class, 'cache');
+        $kept = [];
+
+        foreach ($property->getValue($store) as $key => $value) {
+            /*
+             * The plugins are asked before the value is inspected, so a value no plugin wants, such
+             * as a large or deeply nested array, costs nothing to discard.
+             */
+            if ($value !== null && $this->keepsCacheValue((string) $key, $value, $keepers) && $this->isPlainValue($value)) {
+                $kept[$key] = $value;
+            }
+        }
+
+        $store->flushInternalCache();
+
+        if ($kept !== []) {
+            $property->setValue($store, $kept);
+        }
+    }
+
+    /**
+     * Whether a plugin asks to keep a cache value. A plugin that throws drops the value, so a broken
+     * plugin costs a cache read rather than the operation.
+     *
+     * @param string $key
+     * @param mixed $value
+     * @param array<string, object> $keepers
+     * @return bool
+     */
+    protected function keepsCacheValue(string $key, $value, array $keepers): bool
+    {
+        foreach ($keepers as $identifier => $plugin) {
+            try {
+                // @phpstan-ignore method.notFound (cacheValueKeepers() only returns plugins that declare it)
+                if ($plugin->keepWorkerCacheValue($key, $value) === true) {
+                    return true;
+                }
+            }
+            catch (Throwable $ex) {
+                $this->logQuietly(sprintf(
+                    'Winter.Octane: plugin %s failed to decide whether to keep the cache value %s, so it was not kept: %s',
+                    $identifier,
+                    $key,
+                    $ex->getMessage()
+                ), $ex);
+
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a value holds only nulls, scalars and arrays of them.
+     *
+     * An array element that is a PHP reference is rejected too. It is shared with every copy of the
+     * array, so a request that changed its copy would change the kept value, and an array that
+     * refers to itself would never finish being checked.
+     *
+     * @param mixed $value
+     * @return bool
+     */
+    protected function isPlainValue($value): bool
+    {
+        if (!is_array($value)) {
+            return $value === null || is_scalar($value);
+        }
+
+        foreach ($value as $key => $item) {
+            if (\ReflectionReference::fromArrayElement($value, $key) !== null || !$this->isPlainValue($item)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
