@@ -14,7 +14,7 @@ This plugin:
 - Clears request state at the start of every Octane operation, before Octane's own listeners run. State that core changes and fails to change back (mass-assignment protection after a failed migration, the YAML processor after a failed parse, and the `exception.beforeRender` listeners each back-end request adds) is put back to the state the worker booted with.
 - Serves only the files Winter's `.htaccess` whitelists, under FrankenPHP, Swoole and RoadRunner.
 - Records the client address on the back-end auth manager for each request, after the trusted-proxy middleware, so login throttling is scoped to the right client.
-- Calls `resetWorkerState()` on any plugin that defines it, so other plugins can clear their own request state.
+- Calls `resetWorkerState()` on any plugin that defines it, so other plugins can clear their own request state, and `keepWorkerCacheValue()`, so they can keep chosen cache values in memory.
 
 ## Requirements
 
@@ -88,6 +88,24 @@ Notes:
 - Do not put registrations behind `App::runningInBackend()` in `register()` or `boot()`. A worker runs those methods once, against a request that is not a back-end request, so anything behind that check is never registered. Registrations that only store a callback, such as navigation and settings, cost little, so make them unconditionally.
 
 Plugins that require this one can declare `implements \Winter\Octane\Contracts\ResetsWorkerState` for the compile-time check. PHP will not load a class that implements a missing interface, so plugins that also run without this plugin installed should define the method without implementing the interface.
+
+### Keeping cache values between requests
+
+The reset also empties the in-memory layer of Winter's cache stores, so a value read from the cache in one request is read from the cache store again in the next. To keep values that every request reads, such as site-wide settings, define `keepWorkerCacheValue()`. It is called at the start of every Octane operation, for each key held in memory, and the value is kept when it returns `true`:
+
+```php
+public function keepWorkerCacheValue(string $key, $value): bool
+{
+    return str_starts_with($key, 'acme.site.');
+}
+```
+
+Notes:
+
+- Only scalars and arrays of scalars, nulls and further arrays are kept. Objects and arrays holding PHP references are always flushed, so one request cannot change a value the next request reads.
+- Your plugin decides when a kept value is out of date. A change made by another worker or process does not reach this worker's memory, so return `false` once the value may have changed, for example by comparing a version number your plugin stores in the cache.
+- A method that throws is logged, and that key is flushed. Nothing is kept when the worker itself handles an error, such as an exception that escapes the HTTP kernel.
+- The method is called before the incoming request is bound, so do not read the current request from it. As with `resetWorkerState()`, plugins that require this one can declare `implements \Winter\Octane\Contracts\KeepsWorkerCacheValues`.
 
 ## Tests
 
