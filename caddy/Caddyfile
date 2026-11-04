@@ -42,9 +42,10 @@
 		{$CADDY_SERVER_EXTRA_DIRECTIVES}
 
 		# Winter serves from the project root, so only the paths Winter's .htaccess whitelists may be
-		# served as files. Every other request, including every other PHP file, goes to the worker.
-		# Caddy decodes and cleans the path (dot segments, repeated slashes) before these matchers
-		# see it, so /modules/x/assets/../../../.env is matched as /.env and goes to the worker.
+		# served as files. Every other request, including every other PHP file, goes to the worker,
+		# except the restricted back-end pages below. Caddy decodes and cleans the path (dot segments,
+		# repeated slashes) before these matchers see it, so /modules/x/assets/../../../.env is matched
+		# as /.env and goes to the worker.
 		@public {
 			file
 			path_regexp ^/(\.well-known|storage/app/(uploads/public|media|resized)|storage/temp/public)/|^/(themes|plugins|modules)/.+/(assets|resources)/
@@ -56,8 +57,8 @@
 		# decides that when the application boots, and a worker boots only once. Winter's front
 		# controller serves those pages on a regular PHP thread instead, which boots for each request as
 		# PHP-FPM does. Only the first matching rewrite runs. The octane:frankenphp command builds the
-		# pattern from cms.backendUri.
-		@restricted path_regexp {$WINTER_OCTANE_RESTRICTED_PATHS}
+		# pattern from cms.backendUri; without it, the default covers the stock /backend URI.
+		@restricted path_regexp {$WINTER_OCTANE_RESTRICTED_PATHS:(?i)^(/backend/system/updates|/backend/system/install|/backend/backend/auth)}
 		rewrite @restricted /index.php
 
 		rewrite * /frankenphp-worker.php
