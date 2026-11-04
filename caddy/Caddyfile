@@ -6,6 +6,8 @@
 	admin {$CADDY_SERVER_ADMIN_HOST}:{$CADDY_SERVER_ADMIN_PORT}
 
 	frankenphp {
+		{$WINTER_OCTANE_FRANKENPHP_OPTIONS}
+
 		worker {
 			file "{$APP_PUBLIC_PATH}/frankenphp-worker.php"
 			{$CADDY_SERVER_WORKER_DIRECTIVE}
@@ -51,6 +53,7 @@
 			path_regexp ^/(\.well-known|storage/app/(uploads/public|media|resized)|storage/temp/public)/|^/(themes|plugins|modules)/.+/(assets|resources)/
 			not path *.php
 		}
+		header @public Cache-Control "max-age=604800, public, must-revalidate"
 		file_server @public
 
 		# Winter skips its non-elevated plugins on the back-end's sign-in, update and install pages, but
