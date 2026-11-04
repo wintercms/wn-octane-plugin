@@ -4,6 +4,7 @@ use System\Classes\PluginBase;
 use Winter\Octane\Classes\ResetsRequestState;
 use Winter\Octane\Classes\ResolveAuthIpAddress;
 use Winter\Octane\Classes\ServePublicFiles;
+use Winter\Octane\Classes\WarmsWorker;
 
 /**
  * Laravel Octane support for Winter CMS.
@@ -217,6 +218,8 @@ class Plugin extends PluginBase
             [ResetsRequestState::class, 'handle'],
             PHP_INT_MIN
         );
+
+        $this->app->make('events')->listen(\Laravel\Octane\Events\WorkerStarting::class, [WarmsWorker::class, 'handle']);
 
         /*
          * ResolveAuthIpAddress is appended to the global stack, so it runs after the trusted-proxy

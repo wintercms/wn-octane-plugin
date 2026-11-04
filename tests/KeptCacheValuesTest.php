@@ -38,6 +38,58 @@ class KeptCacheValuesTest extends PersistentWorkerTestCase
     }
 
     /**
+     * A parsed YAML file stays in memory without any plugin asking, because its key names the file's
+     * modification time, and an edited file is parsed again under a new key.
+     *
+     * @return void
+     */
+    public function testAParsedYamlFileIsKeptUntilTheFileChanges(): void
+    {
+        $file = sys_get_temp_dir() . '/winter-octane-' . bin2hex(random_bytes(6)) . '.yaml';
+        file_put_contents($file, "version: 1\n");
+        touch($file, time() - 100);
+
+        $key = fn () => 'yaml::' . $file . '-' . filemtime($file);
+        $results = [];
+
+        $this->app['config']->set('app.debug', false);
+        $this->app['config']->set('cache.default', 'file');
+
+        $this->addWorkerRoute('_worker/yaml', function () use ($file, $key, &$results) {
+            $store = \Winter\Storm\Halcyon\Model::getCacheManager()->store('file');
+            clearstatcache();
+
+            $results[] = [
+                'in memory' => array_key_exists($key(), (new \ReflectionProperty($store, 'cache'))->getValue($store)),
+                'parsed'    => \Winter\Storm\Support\Facades\Yaml::parseFile($file),
+            ];
+
+            return 'read';
+        });
+
+        try {
+            $this->dispatchWorkerRequests(
+                Request::create('/_worker/yaml', 'GET'),
+                Request::create('/_worker/yaml', 'GET')
+            );
+
+            file_put_contents($file, "version: 2\n");
+            touch($file, time() - 50);
+
+            $this->dispatchWorkerRequests(Request::create('/_worker/yaml', 'GET'));
+        }
+        finally {
+            @unlink($file);
+        }
+
+        $this->assertSame([
+            ['in memory' => false, 'parsed' => ['version' => 1]],
+            ['in memory' => true, 'parsed' => ['version' => 1]],
+            ['in memory' => false, 'parsed' => ['version' => 2]],
+        ], $results);
+    }
+
+    /**
      * An object is never kept, even inside an array, because every later request would share the
      * same instance. Neither is an array holding a PHP reference, which every copy shares. A string a driver serialized an object into is kept, since each read builds a
      * new object from it.
@@ -132,12 +184,120 @@ class KeptCacheValuesTest extends PersistentWorkerTestCase
         $app = $this->bootWorker();
         $store = \Winter\Storm\Halcyon\Model::getCacheManager()->store('file');
         $store->putInMemoryCache('kept-scalar', 'value');
+        $store->putInMemoryCache('yaml::/error-path-1', ['a' => 1]);
 
         $this->withFakePlugins(['Winter.Tests.KeepPrefix' => new KeptCacheValuesPrefixPlugin($app)], function () use ($app) {
             (new ResetsRequestState())->handle(new WorkerErrorOccurred(new \RuntimeException('the original failure'), $app));
         });
 
         $this->assertNull($store->getFromMemoryCache('kept-scalar'));
+        $this->assertNull($store->getFromMemoryCache('yaml::/error-path-1'));
+    }
+
+    /**
+     * A parsed YAML value holding an object is flushed like any other, because every later request would
+     * share the instance. Another key that merely looks similar is not kept either.
+     *
+     * @return void
+     */
+    public function testOnlyPlainParsedYamlIsKept(): void
+    {
+        $seen = $this->writeThenRead(new KeptCacheValuesPrefixPlugin($this->app), [
+            'yaml::/plain-1'  => ['a' => 1],
+            'yaml::/object-1' => new \ArrayObject(['user' => 'a']),
+            'yaml::/nested-1' => ['x' => new \stdClass()],
+            'yaml:/similar-1' => ['a' => 1],
+        ]);
+
+        $this->assertSame(['a' => 1], $seen['yaml::/plain-1'] ?? null);
+        $this->assertArrayNotHasKey('yaml::/object-1', $seen);
+        $this->assertArrayNotHasKey('yaml::/nested-1', $seen);
+        $this->assertArrayNotHasKey('yaml:/similar-1', $seen);
+    }
+
+    /**
+     * A parsed YAML value is inspected once, not on every reset, and a changed value under the same key
+     * is inspected again.
+     *
+     * @return void
+     */
+    public function testParsedYamlIsInspectedOnce(): void
+    {
+        $reset = new class extends ResetsRequestState {
+            public int $inspections = 0;
+
+            /**
+             * @param mixed $value
+             * @return bool
+             */
+            protected function isPlainValue($value): bool
+            {
+                $this->inspections++;
+
+                return parent::isPlainValue($value);
+            }
+        };
+
+        $key = 'yaml::/' . bin2hex(random_bytes(6)) . '-1';
+        $store = \Winter\Storm\Halcyon\Model::getCacheManager()->store('file');
+        $store->flushInternalCache();
+        $store->putInMemoryCache($key, ['a' => 1]);
+
+        $flush = new \ReflectionMethod(ResetsRequestState::class, 'flushMemoryRepository');
+        $flush->invoke($reset, $store, [], true);
+        $first = $reset->inspections;
+        $flush->invoke($reset, $store, [], true);
+
+        $this->assertGreaterThan(0, $first);
+        $this->assertSame($first, $reset->inspections);
+
+        $store->putInMemoryCache($key, new \stdClass());
+        $flush->invoke($reset, $store, [], true);
+
+        $this->assertNull($store->getFromMemoryCache($key));
+    }
+
+    /**
+     * A later value that only compares equal to an inspected one may hold a reference, which every copy
+     * shares, so the inspected copy stays in memory instead of it.
+     *
+     * @return void
+     */
+    public function testAnEqualParsedYamlValueHoldingAReferenceIsNotKept(): void
+    {
+        $key = 'yaml::/' . bin2hex(random_bytes(6)) . '-1';
+        $seen = [];
+        $shared = 1;
+
+        $this->addWorkerRoute('_worker/yaml-prime', function () use ($key) {
+            \Winter\Storm\Halcyon\Model::getCacheManager()->store('file')->putInMemoryCache($key, ['a' => 1]);
+
+            return 'primed';
+        });
+
+        $this->addWorkerRoute('_worker/yaml-replace', function () use ($key, &$shared) {
+            $value = ['a' => &$shared];
+            \Winter\Storm\Halcyon\Model::getCacheManager()->store('file')->putInMemoryCache($key, $value);
+
+            return 'replaced';
+        });
+
+        $this->addWorkerRoute('_worker/yaml-change', function () use ($key, &$shared, &$seen) {
+            $shared = 'changed';
+            $seen[] = \Winter\Storm\Halcyon\Model::getCacheManager()->store('file')->getFromMemoryCache($key);
+
+            return 'read';
+        });
+
+        $this->dispatchWorkerRequests(
+            Request::create('/_worker/yaml-prime', 'GET'),
+            Request::create('/_worker/yaml-replace', 'GET'),
+            Request::create('/_worker/yaml-prime', 'GET'),
+            Request::create('/_worker/yaml-replace', 'GET'),
+            Request::create('/_worker/yaml-change', 'GET')
+        );
+
+        $this->assertSame([['a' => 1]], $seen);
     }
 
     /**
