@@ -10,3 +10,5 @@
     - Serve the back-end sign-in, update and install pages outside the FrankenPHP worker, so non-elevated plugins stay unloaded there as under PHP-FPM.
 1.3.0:
     - Make theme template reads, parsed YAML and worker start cheaper in a worker.
+1.4.0:
+    - Send a one-week Cache-Control header with public files, and accept global FrankenPHP options through WINTER_OCTANE_FRANKENPHP_OPTIONS.
