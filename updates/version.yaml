@@ -6,3 +6,5 @@
     - Republish 1.1.0 under a new number, because Packagist recorded 1.1.0 at an earlier commit.
 1.2.0:
     - Let plugins keep chosen in-memory cache values between requests.
+1.2.1:
+    - Serve the back-end sign-in, update and install pages outside the FrankenPHP worker, so non-elevated plugins stay unloaded there as under PHP-FPM.
