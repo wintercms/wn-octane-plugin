@@ -2,7 +2,10 @@
 
 use Laravel\Octane\Commands\Concerns\InstallsFrankenPhpDependencies;
 use Laravel\Octane\Commands\StartFrankenPhpCommand as OctaneStartFrankenPhpCommand;
+use Laravel\Octane\FrankenPhp\ServerProcessInspector;
+use Laravel\Octane\FrankenPhp\ServerStateFile;
 use ReflectionClass;
+use Winter\Storm\Router\Helper as RouterHelper;
 
 /**
  * Starts Octane's FrankenPHP server with defaults that are safe for Winter.
@@ -12,6 +15,10 @@ use ReflectionClass;
  * .env and the logs as files, and execute any PHP file in the project directly. Octane's worker
  * stub also looks for the application one directory above the web root. This command uses the
  * plugin's Caddyfile unless --caddyfile is given, and installs a worker file with Winter's paths.
+ *
+ * Winter registers only its elevated plugins for the requests System\ServiceProvider lists in
+ * registerPrivilegedActions(), but a worker boots once, for no request in particular. The command
+ * passes the back-end ones to the Caddyfile, which serves them outside the worker.
  *
  * Octane also reads each line FrankenPHP writes to stderr as a Caddy log entry and prints its
  * "msg" field. An application that logs to stderr through Monolog's JsonFormatter writes records
@@ -43,6 +50,20 @@ class StartFrankenPhpCommand extends OctaneStartFrankenPhpCommand
     }
 
     /**
+     * Start the server, with the restricted paths in the Caddyfile's environment.
+     *
+     * @param \Laravel\Octane\FrankenPhp\ServerProcessInspector $inspector
+     * @param \Laravel\Octane\FrankenPhp\ServerStateFile $serverStateFile
+     * @return int
+     */
+    public function handle(ServerProcessInspector $inspector, ServerStateFile $serverStateFile)
+    {
+        $this->passRestrictedPaths();
+
+        return parent::handle($inspector, $serverStateFile);
+    }
+
+    /**
      * Determine whether a stderr line is a Monolog JSON record rather than a Caddy or Octane message.
      *
      * @param string $line
@@ -56,6 +77,29 @@ class StartFrankenPhpCommand extends OctaneStartFrankenPhpCommand
             && !array_key_exists('msg', $record)
             && array_key_exists('message', $record)
             && array_key_exists('level_name', $record);
+    }
+
+    /**
+     * The back-end paths Winter boots without its non-elevated plugins, as a case-insensitive prefix
+     * pattern for Caddy's path_regexp. The prefixes are built the way
+     * System\ServiceProvider::registerPrivilegedActions() builds them. Core also lists /combine/,
+     * which stays on the worker: a worker has already booted every plugin, and those frequent asset
+     * requests would otherwise queue for the few regular PHP threads.
+     *
+     * @param string $backendUri
+     * @return string
+     */
+    public static function restrictedPathPattern(string $backendUri): string
+    {
+        $backendUri = RouterHelper::normalizeUrl($backendUri);
+
+        $prefixes = [
+            $backendUri . '/system/updates',
+            $backendUri . '/system/install',
+            $backendUri . '/backend/auth',
+        ];
+
+        return '(?i)^(' . implode('|', array_map(fn ($prefix) => preg_quote($prefix), $prefixes)) . ')';
     }
 
     /**
@@ -118,6 +162,20 @@ class StartFrankenPhpCommand extends OctaneStartFrankenPhpCommand
         }
 
         return [$output, implode("\n", $serverLines)];
+    }
+
+    /**
+     * Add the restricted paths pattern for cms.backendUri to the environment Octane passes to Caddy.
+     * A value the site sets in octane.caddy.env takes precedence.
+     *
+     * @return void
+     */
+    protected function passRestrictedPaths(): void
+    {
+        config(['octane.caddy.env' => [
+            'WINTER_OCTANE_RESTRICTED_PATHS' => static::restrictedPathPattern((string) config('cms.backendUri', 'backend')),
+            ...config('octane.caddy.env', []),
+        ]]);
     }
 
     protected function isOctaneWorkerStub(string $worker): bool

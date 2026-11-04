@@ -48,6 +48,19 @@ Route::get('/_octane-smoke/read', function () use ($readState) {
 });
 
 /*
+ * Under a path Winter boots without its non-elevated plugins, whether this request skipped them and
+ * whether a worker served it. Registered before the back-end's catch-all route.
+ */
+\Illuminate\Support\Facades\Event::listen('backend.beforeRoute', function () {
+    Route::get(config('cms.backendUri', 'backend') . '/backend/auth/_octane-smoke', function () {
+        return response()->json([
+            'no_init' => \System\Classes\PluginManager::$noInit,
+            'worker'  => app()->bound('Laravel\Octane\Contracts\Client'),
+        ]);
+    });
+});
+
+/*
  * Who the session belongs to, through the web middleware, so the tests can tell one browser's
  * session from another's.
  */
