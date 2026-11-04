@@ -52,6 +52,14 @@
 		}
 		file_server @public
 
+		# Winter skips its non-elevated plugins on the back-end's sign-in, update and install pages, but
+		# decides that when the application boots, and a worker boots only once. Winter's front
+		# controller serves those pages on a regular PHP thread instead, which boots for each request as
+		# PHP-FPM does. Only the first matching rewrite runs. The octane:frankenphp command builds the
+		# pattern from cms.backendUri.
+		@restricted path_regexp {$WINTER_OCTANE_RESTRICTED_PATHS}
+		rewrite @restricted /index.php
+
 		rewrite * /frankenphp-worker.php
 
 		php_server {

@@ -59,6 +59,29 @@ class ServerSmokeTest extends OctaneServerTestCase
     }
 
     /**
+     * Under FrankenPHP, a path Winter boots without its non-elevated plugins is served outside the
+     * worker, by a request that boots the application as PHP-FPM does. Swoole and RoadRunner serve it
+     * from the worker, which booted with every plugin.
+     *
+     * @return void
+     */
+    public function testRestrictedPathsAreServedOutsideTheWorkerUnderFrankenPhp(): void
+    {
+        $this->startServer();
+
+        $restricted = $this->get('/backend/backend/auth/_octane-smoke');
+
+        if ($this->server === 'frankenphp') {
+            $this->assertFalse($restricted['worker'], 'a restricted path must not be served by the worker');
+            $this->assertTrue($restricted['no_init'], 'a restricted path must boot without non-elevated plugins');
+        }
+        else {
+            $this->assertTrue($restricted['worker'], "{$this->server} serves every path from the worker");
+            $this->assertFalse($restricted['no_init']);
+        }
+    }
+
+    /**
      * Winter serves from the project root, so the server must only serve Winter's whitelisted asset
      * paths as files. Octane's own configuration for each server serves any file in the project, and
      * FrankenPHP's also ran any PHP file in it.

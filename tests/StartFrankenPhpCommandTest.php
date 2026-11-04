@@ -157,6 +157,74 @@ class StartFrankenPhpCommandTest extends PluginTestCase
     }
 
     /**
+     * The restricted paths pattern holds the back-end prefixes Winter boots without its non-elevated
+     * plugins, under the configured back-end URI, matched without regard to case.
+     *
+     * @return void
+     */
+    public function testTheRestrictedPathsPatternMatchesWintersPrivilegedRequests(): void
+    {
+        $this->assertSame(
+            '(?i)^(/backend/system/updates|/backend/system/install|/backend/backend/auth)',
+            StartFrankenPhpCommand::restrictedPathPattern('backend')
+        );
+
+        $pattern = '#' . StartFrankenPhpCommand::restrictedPathPattern('/admin.area/') . '#';
+
+        foreach (['/admin.area/backend/auth/signin', '/ADMIN.AREA/system/updates', '/admin.area/system/install'] as $path) {
+            $this->assertMatchesRegularExpression($pattern, $path);
+        }
+
+        foreach (['/', '/backend/backend/auth/signin', '/adminxarea/backend/auth', '/combine/abc123', '/admin.area/cms'] as $path) {
+            $this->assertDoesNotMatchRegularExpression($pattern, $path);
+        }
+    }
+
+    /**
+     * The command passes the pattern for the configured back-end URI to the Caddyfile, alongside the
+     * site's own octane.caddy.env, and a value the site sets for it is kept.
+     *
+     * @return void
+     */
+    public function testThePatternForTheBackendUriIsPassedToTheCaddyfile(): void
+    {
+        $command = $this->makeCommand([]);
+        config(['cms.backendUri' => 'admin', 'octane.caddy.env' => ['EXTRA' => 'kept']]);
+
+        (fn () => $this->passRestrictedPaths())->call($command);
+
+        $this->assertSame(
+            ['WINTER_OCTANE_RESTRICTED_PATHS' => StartFrankenPhpCommand::restrictedPathPattern('admin'), 'EXTRA' => 'kept'],
+            config('octane.caddy.env')
+        );
+
+        config(['octane.caddy.env' => ['WINTER_OCTANE_RESTRICTED_PATHS' => 'custom']]);
+
+        (fn () => $this->passRestrictedPaths())->call($command);
+
+        $this->assertSame(['WINTER_OCTANE_RESTRICTED_PATHS' => 'custom'], config('octane.caddy.env'));
+    }
+
+    /**
+     * The Caddyfile sends the restricted paths to Winter's front controller before the rewrite that
+     * sends everything else to the worker.
+     *
+     * @return void
+     */
+    public function testTheCaddyfileServesRestrictedPathsOutsideTheWorker(): void
+    {
+        $caddyfile = (string) file_get_contents(dirname(__DIR__) . '/caddy/Caddyfile');
+        $rewrite = "@restricted path_regexp {\$WINTER_OCTANE_RESTRICTED_PATHS}\n\t\trewrite @restricted /index.php\n";
+
+        $this->assertStringContainsString($rewrite, $caddyfile);
+        $this->assertLessThan(
+            strpos($caddyfile, 'rewrite * /frankenphp-worker.php'),
+            strpos($caddyfile, $rewrite),
+            'the restricted rewrite must come before the worker rewrite'
+        );
+    }
+
+    /**
      * Monolog JSON records in the server's error output are printed unchanged, and every other line
      * (Caddy's own log lines and plain text) is left for Octane to format.
      *
