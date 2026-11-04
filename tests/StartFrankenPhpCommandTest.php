@@ -207,14 +207,15 @@ class StartFrankenPhpCommandTest extends PluginTestCase
 
     /**
      * The Caddyfile sends the restricted paths to Winter's front controller before the rewrite that
-     * sends everything else to the worker.
+     * sends everything else to the worker, and defaults to the pattern for the stock back-end URI.
      *
      * @return void
      */
     public function testTheCaddyfileServesRestrictedPathsOutsideTheWorker(): void
     {
         $caddyfile = (string) file_get_contents(dirname(__DIR__) . '/caddy/Caddyfile');
-        $rewrite = "@restricted path_regexp {\$WINTER_OCTANE_RESTRICTED_PATHS}\n\t\trewrite @restricted /index.php\n";
+        $default = StartFrankenPhpCommand::restrictedPathPattern('backend');
+        $rewrite = "@restricted path_regexp {\$WINTER_OCTANE_RESTRICTED_PATHS:{$default}}\n\t\trewrite @restricted /index.php\n";
 
         $this->assertStringContainsString($rewrite, $caddyfile);
         $this->assertLessThan(
