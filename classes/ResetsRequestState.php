@@ -185,12 +185,12 @@ class ResetsRequestState
     /**
      * Reset framework-level state held outside the managers.
      *
-     * @param bool $keepCacheValues Whether plugins may keep in-memory cache values.
+     * @param bool $keepCacheValues Whether parsed YAML and the values plugins ask for stay in memory.
      * @return void
      */
     protected function resetCoreState(bool $keepCacheValues = true): void
     {
-        $this->flushHalcyonRequestCache($keepCacheValues ? $this->cacheValueKeepers() : []);
+        $this->flushHalcyonRequestCache($keepCacheValues ? $this->cacheValueKeepers() : [], $keepCacheValues);
 
         /*
          * Storm caches duplicate queries for the rest of the process, and only a write made through
@@ -216,9 +216,10 @@ class ResetsRequestState
      * wrap keep their own invalidation rules.
      *
      * @param array<string, object> $keepers Plugins that may keep cache values, from cacheValueKeepers().
+     * @param bool $keepParsedYaml Whether parsed YAML files stay in memory.
      * @return void
      */
-    protected function flushHalcyonRequestCache(array $keepers = []): void
+    protected function flushHalcyonRequestCache(array $keepers = [], bool $keepParsedYaml = false): void
     {
         $managers = [];
 
@@ -252,7 +253,7 @@ class ResetsRequestState
 
             foreach ((new \ReflectionProperty($manager, 'stores'))->getValue($manager) as $store) {
                 if ($store instanceof MemoryRepository) {
-                    $this->flushMemoryRepository($store, $keepers);
+                    $this->flushMemoryRepository($store, $keepers, $keepParsedYaml);
                 }
             }
         }
@@ -282,23 +283,24 @@ class ResetsRequestState
     }
 
     /**
-     * Empty a store's in-memory layer, except for the values a plugin asks to keep.
+     * Empty a store's in-memory layer, except for parsed YAML files and the values a plugin asks to keep.
      *
      * A kept value is shared by every later request the worker serves, so only nulls, scalars and
      * arrays of them are kept. An object would be the same instance in each request, and one
      * request's change to it would reach the next. A value that a store's driver serialized
      * itself is a string here, and is unserialized into a new object on each read.
      *
-     * The plugin that keeps a value is responsible for dropping it when the external store changes,
+     * A plugin that keeps a value is responsible for dropping it when the external store changes,
      * for example by forgetting the key or by no longer accepting it.
      *
      * @param \Winter\Storm\Halcyon\MemoryRepository $store
      * @param array<string, object> $keepers Plugins that may keep cache values, from cacheValueKeepers().
+     * @param bool $keepParsedYaml Whether parsed YAML files stay in memory.
      * @return void
      */
-    protected function flushMemoryRepository(MemoryRepository $store, array $keepers): void
+    protected function flushMemoryRepository(MemoryRepository $store, array $keepers, bool $keepParsedYaml = false): void
     {
-        if ($keepers === []) {
+        if ($keepers === [] && !$keepParsedYaml) {
             $store->flushInternalCache();
 
             return;
@@ -315,11 +317,23 @@ class ResetsRequestState
         $kept = [];
 
         foreach ($property->getValue($store) as $key => $value) {
+            if ($value === null) {
+                continue;
+            }
+
+            if ($keepParsedYaml && str_starts_with((string) $key, 'yaml::')) {
+                if ($this->keepsParsedYaml((string) $key, $value)) {
+                    $kept[$key] = static::$inspectedYaml[$key];
+                }
+
+                continue;
+            }
+
             /*
              * The plugins are asked before the value is inspected, so a value no plugin wants, such
              * as a large or deeply nested array, costs nothing to discard.
              */
-            if ($value !== null && $this->keepsCacheValue((string) $key, $value, $keepers) && $this->isPlainValue($value)) {
+            if ($this->keepsCacheValue((string) $key, $value, $keepers) && $this->isPlainValue($value)) {
                 $kept[$key] = $value;
             }
         }
@@ -329,6 +343,34 @@ class ResetsRequestState
         if ($kept !== []) {
             $property->setValue($store, $kept);
         }
+    }
+
+    /**
+     * Whether a parsed YAML file stays in memory. Storm's Yaml::parseFile() puts the file's modification
+     * time in its cache key, so an edit that moves the modification time is parsed again. An edit that
+     * leaves it unchanged keeps the old value, as it does in the external cache.
+     *
+     * This runs on every operation, and a worker can hold hundreds of these, so a value that was already
+     * inspected is not walked again. Comparing the same array with itself returns at once. A value only
+     * compares equal to the inspected copy, which may hold a reference, so the caller keeps that copy.
+     *
+     * @param string $key
+     * @param mixed $value
+     * @return bool
+     */
+    protected function keepsParsedYaml(string $key, $value): bool
+    {
+        if (array_key_exists($key, static::$inspectedYaml) && static::$inspectedYaml[$key] === $value) {
+            return true;
+        }
+
+        if (count(static::$inspectedYaml) >= static::MAX_KEPT_YAML_VALUES || !$this->isPlainValue($value)) {
+            return false;
+        }
+
+        static::$inspectedYaml[$key] = $value;
+
+        return true;
     }
 
     /**
@@ -676,9 +718,22 @@ class ResetsRequestState
     ];
 
     /**
+     * @var int Each edit to a YAML file adds a key, so the parsed files kept in memory need a limit.
+     */
+    protected const MAX_KEPT_YAML_VALUES = 5000;
+
+    /**
+     * Parsed YAML values already found to be plain, by cache key.
+     *
+     * @var array<string, mixed>
+     */
+    protected static array $inspectedYaml = [];
+
+    /**
      * Classes that use a trait in TRAIT_STATIC_CACHES, as trait => list of classes.
      *
-     * Resolved lazily and kept for the life of the worker, since a class cannot stop using a trait.
+     * Filled when the worker starts, extended as classes are autoloaded, and kept for the life of the
+     * worker, since a class cannot stop using a trait.
      *
      * @var array<class-string, list<class-string>>
      */
@@ -740,12 +795,12 @@ class ResetsRequestState
      * Plugins are free to use these traits, so the set cannot be hard-coded, and autoloading means it
      * is not complete until the class in question has been touched. get_declared_classes() only ever
      * appends, so remembering how far the last pass got makes each subsequent operation examine just
-     * the classes autoloaded since. The first pass, during the worker's first operation, is the only
-     * one that walks the whole list.
+     * the classes autoloaded since. The first pass, when the worker starts (see WarmsWorker), is the
+     * only one that walks the whole list.
      *
      * @return void
      */
-    protected function resolveTraitUsers(): void
+    public function resolveTraitUsers(): void
     {
         $declared = get_declared_classes();
 
