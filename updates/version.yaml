@@ -8,3 +8,5 @@
     - Let plugins keep chosen in-memory cache values between requests.
 1.2.1:
     - Serve the back-end sign-in, update and install pages outside the FrankenPHP worker, so non-elevated plugins stay unloaded there as under PHP-FPM.
+1.3.0:
+    - Make theme template reads, parsed YAML and worker start cheaper in a worker.
