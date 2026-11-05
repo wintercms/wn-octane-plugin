@@ -19,6 +19,10 @@ use Winter\Storm\Halcyon\Datasource\FileDatasource;
  * and list queries use FileDatasource unchanged. Template source is the same for every user, so
  * nothing kept here can carry one request's state into the next.
  *
+ * The single-template cache keys it makes are recorded, so the reset can keep the parsed templates
+ * that Halcyon caches under them in memory. Halcyon compares a cached template's modification time
+ * with the file's before it uses it, through lastModified() here, which stats the file.
+ *
  * A symlink on the theme directory or a directory above it that is repointed under a running worker
  * needs a worker reload, as Octane asks for after a deployment, because a remembered path still names
  * the old target.
@@ -43,6 +47,11 @@ class WorkerFileDatasource extends FileDatasource
     protected const SETTLE_SECONDS = 2;
 
     /**
+     * @var int Template names can come from request data, so the recorded cache keys need a limit.
+     */
+    protected const MAX_RECORD_CACHE_KEYS = 10000;
+
+    /**
      * @var array<string, string> Resolved paths for reads, by directory, file name and extension.
      */
     protected array $readPaths = [];
@@ -56,6 +65,13 @@ class WorkerFileDatasource extends FileDatasource
      * @var int The size of everything in $contents, in bytes.
      */
     protected int $contentBytes = 0;
+
+    /**
+     * @var array<string, string|false> The base path of the datasource that made each single-template
+     * cache key, or false once datasources over different directories made the same one. Halcyon does
+     * not put the datasource in its cache keys, so the same template name in two themes shares a key.
+     */
+    protected static array $recordCacheKeys = [];
 
     /**
      * Make a worker datasource that reads the same files as an existing one.
@@ -97,6 +113,38 @@ class WorkerFileDatasource extends FileDatasource
         catch (Exception $ex) {
             return null;
         }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function makeCacheKey(string $name = ''): string
+    {
+        $key = parent::makeCacheKey($name);
+
+        // Builder::generateCacheKey() starts the name with a single-template query's serialized name and extension.
+        if (str_starts_with($name, 'a:2:{')) {
+            if (count(static::$recordCacheKeys) >= static::MAX_RECORD_CACHE_KEYS) {
+                static::$recordCacheKeys = [];
+            }
+
+            $madeBy = static::$recordCacheKeys[$key] ?? $this->basePath;
+            static::$recordCacheKeys[$key] = $madeBy === $this->basePath ? $madeBy : false;
+        }
+
+        return $key;
+    }
+
+    /**
+     * Whether a Halcyon cache key belongs to a single-template query made through a datasource of this
+     * class, and only one theme directory's.
+     *
+     * @param string $key The cache key, which Halcyon makes from the object directory and makeCacheKey().
+     * @return bool
+     */
+    public static function madeRecordCacheKey(string $key): bool
+    {
+        return strlen($key) > 8 && is_string(static::$recordCacheKeys[substr($key, -8)] ?? null);
     }
 
     /**

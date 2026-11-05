@@ -185,7 +185,8 @@ class ResetsRequestState
     /**
      * Reset framework-level state held outside the managers.
      *
-     * @param bool $keepCacheValues Whether parsed YAML and the values plugins ask for stay in memory.
+     * @param bool $keepCacheValues Whether parsed YAML, parsed templates and the values plugins ask for
+     * stay in memory.
      * @return void
      */
     protected function resetCoreState(bool $keepCacheValues = true): void
@@ -216,10 +217,10 @@ class ResetsRequestState
      * wrap keep their own invalidation rules.
      *
      * @param array<string, object> $keepers Plugins that may keep cache values, from cacheValueKeepers().
-     * @param bool $keepParsedYaml Whether parsed YAML files stay in memory.
+     * @param bool $keepCoreValues Whether parsed YAML files and parsed templates stay in memory.
      * @return void
      */
-    protected function flushHalcyonRequestCache(array $keepers = [], bool $keepParsedYaml = false): void
+    protected function flushHalcyonRequestCache(array $keepers = [], bool $keepCoreValues = false): void
     {
         $managers = [];
 
@@ -253,7 +254,7 @@ class ResetsRequestState
 
             foreach ((new \ReflectionProperty($manager, 'stores'))->getValue($manager) as $store) {
                 if ($store instanceof MemoryRepository) {
-                    $this->flushMemoryRepository($store, $keepers, $keepParsedYaml);
+                    $this->flushMemoryRepository($store, $keepers, $keepCoreValues);
                 }
             }
         }
@@ -283,7 +284,8 @@ class ResetsRequestState
     }
 
     /**
-     * Empty a store's in-memory layer, except for parsed YAML files and the values a plugin asks to keep.
+     * Empty a store's in-memory layer, except for parsed YAML files, parsed templates and the values a
+     * plugin asks to keep.
      *
      * A kept value is shared by every later request the worker serves, so only nulls, scalars and
      * arrays of them are kept. An object would be the same instance in each request, and one
@@ -293,14 +295,19 @@ class ResetsRequestState
      * A plugin that keeps a value is responsible for dropping it when the external store changes,
      * for example by forgetting the key or by no longer accepting it.
      *
+     * A parsed template is one Halcyon cached for a single-template query through WorkerFileDatasource.
+     * Halcyon compares its modification time with the file's before every use, as it does with the
+     * copy in the external store. Parsed templates are kept only while the store holds the generation
+     * this worker last saw, so emptying the store, from any process, drops them in every worker.
+     *
      * @param \Winter\Storm\Halcyon\MemoryRepository $store
      * @param array<string, object> $keepers Plugins that may keep cache values, from cacheValueKeepers().
-     * @param bool $keepParsedYaml Whether parsed YAML files stay in memory.
+     * @param bool $keepCoreValues Whether parsed YAML files and parsed templates stay in memory.
      * @return void
      */
-    protected function flushMemoryRepository(MemoryRepository $store, array $keepers, bool $keepParsedYaml = false): void
+    protected function flushMemoryRepository(MemoryRepository $store, array $keepers, bool $keepCoreValues = false): void
     {
-        if ($keepers === [] && !$keepParsedYaml) {
+        if ($keepers === [] && !$keepCoreValues) {
             $store->flushInternalCache();
 
             return;
@@ -315,15 +322,24 @@ class ResetsRequestState
 
         $property = new \ReflectionProperty(MemoryRepository::class, 'cache');
         $kept = [];
+        $templates = [];
 
         foreach ($property->getValue($store) as $key => $value) {
             if ($value === null) {
                 continue;
             }
 
-            if ($keepParsedYaml && str_starts_with((string) $key, 'yaml::')) {
-                if ($this->keepsParsedYaml((string) $key, $value)) {
-                    $kept[$key] = static::$inspectedYaml[$key];
+            if ($keepCoreValues && str_starts_with((string) $key, 'yaml::')) {
+                if ($this->keepsInspectedValue((string) $key, $value)) {
+                    $kept[$key] = static::$inspectedValues[$key];
+                }
+
+                continue;
+            }
+
+            if ($keepCoreValues && WorkerFileDatasource::madeRecordCacheKey((string) $key)) {
+                if ($this->isTemplateRecord($value) && $this->keepsInspectedValue((string) $key, $value)) {
+                    $templates[$key] = static::$inspectedValues[$key];
                 }
 
                 continue;
@@ -340,15 +356,77 @@ class ResetsRequestState
 
         $store->flushInternalCache();
 
+        if ($templates !== [] && $this->storeGenerationIsCurrent($store)) {
+            $kept += $templates;
+        }
+
         if ($kept !== []) {
             $property->setValue($store, $kept);
         }
     }
 
     /**
-     * Whether a parsed YAML file stays in memory. Storm's Yaml::parseFile() puts the file's modification
-     * time in its cache key, so an edit that moves the modification time is parsed again. An edit that
-     * leaves it unchanged keeps the old value, as it does in the external cache.
+     * Whether a cached value has the shape Halcyon gives a single-template query: no template, or one
+     * template keyed by its file name.
+     *
+     * @param mixed $value
+     * @return bool
+     */
+    protected function isTemplateRecord($value): bool
+    {
+        if ($value === []) {
+            return true;
+        }
+
+        if (!is_array($value) || count($value) !== 1) {
+            return false;
+        }
+
+        $record = reset($value);
+
+        return is_array($record)
+            && ($record['fileName'] ?? null) === key($value)
+            && is_string($record['content'] ?? null)
+            && is_int($record['mtime'] ?? null);
+    }
+
+    /**
+     * Whether a store still holds the generation this worker last saw. A store without one, because it
+     * is new or was emptied, gets a new one, and the parsed templates read before are not kept.
+     *
+     * @param \Winter\Storm\Halcyon\MemoryRepository $store
+     * @return bool
+     */
+    protected function storeGenerationIsCurrent(MemoryRepository $store): bool
+    {
+        $id = spl_object_id($store);
+
+        try {
+            $generation = $store->getStore()->get(static::TEMPLATE_GENERATION_KEY);
+
+            if (is_string($generation) && $generation === (static::$storeGenerations[$id] ?? null)) {
+                return true;
+            }
+
+            if (!is_string($generation)) {
+                $generation = bin2hex(random_bytes(8));
+                $store->getStore()->forever(static::TEMPLATE_GENERATION_KEY, $generation);
+            }
+
+            static::$storeGenerations[$id] = $generation;
+        }
+        catch (Throwable $ex) {
+            unset(static::$storeGenerations[$id]);
+            $this->logQuietly('Winter.Octane: could not read the template cache generation, so parsed templates were not kept: ' . $ex->getMessage(), $ex);
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a parsed YAML file or template stays in memory. Storm's Yaml::parseFile() puts the file's
+     * modification time in its cache key, so an edit that moves the modification time is parsed again. An
+     * edit that leaves it unchanged keeps the old value, as it does in the external cache.
      *
      * This runs on every operation, and a worker can hold hundreds of these, so a value that was already
      * inspected is not walked again. Comparing the same array with itself returns at once. A value only
@@ -358,17 +436,17 @@ class ResetsRequestState
      * @param mixed $value
      * @return bool
      */
-    protected function keepsParsedYaml(string $key, $value): bool
+    protected function keepsInspectedValue(string $key, $value): bool
     {
-        if (array_key_exists($key, static::$inspectedYaml) && static::$inspectedYaml[$key] === $value) {
+        if (array_key_exists($key, static::$inspectedValues) && static::$inspectedValues[$key] === $value) {
             return true;
         }
 
-        if (count(static::$inspectedYaml) >= static::MAX_KEPT_YAML_VALUES || !$this->isPlainValue($value)) {
+        if (count(static::$inspectedValues) >= static::MAX_INSPECTED_VALUES || !$this->isPlainValue($value)) {
             return false;
         }
 
-        static::$inspectedYaml[$key] = $value;
+        static::$inspectedValues[$key] = $value;
 
         return true;
     }
@@ -718,16 +796,29 @@ class ResetsRequestState
     ];
 
     /**
-     * @var int Each edit to a YAML file adds a key, so the parsed files kept in memory need a limit.
+     * @var int Each edit to a YAML file adds a key, so the parsed files and templates kept in memory need
+     * a limit.
      */
-    protected const MAX_KEPT_YAML_VALUES = 5000;
+    protected const MAX_INSPECTED_VALUES = 5000;
 
     /**
-     * Parsed YAML values already found to be plain, by cache key.
+     * @var string The key, in each external store, of the generation under which parsed templates are kept.
+     */
+    protected const TEMPLATE_GENERATION_KEY = 'winter.octane.template-generation';
+
+    /**
+     * Parsed YAML files and templates already found to be plain, by cache key.
      *
      * @var array<string, mixed>
      */
-    protected static array $inspectedYaml = [];
+    protected static array $inspectedValues = [];
+
+    /**
+     * The generation each store held when this worker last kept parsed templates, by store object id.
+     *
+     * @var array<int, string>
+     */
+    protected static array $storeGenerations = [];
 
     /**
      * Classes that use a trait in TRAIT_STATIC_CACHES, as trait => list of classes.
