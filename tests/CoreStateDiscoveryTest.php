@@ -78,7 +78,6 @@ class CoreStateDiscoveryTest extends PluginTestCase
         // Derived from code or configuration, which do not change while a worker runs.
         'Backend\Classes\Skin::$skinCache' => 'the back-end skin named in configuration',
         'Cms\Helpers\Cms::$actionExists' => 'whether a route exists; routes are registered once per worker',
-        'Winter\Storm\Database\Concerns\HasRelationships::$resolvedNonRelationMethods' => 'per-class method lists read from the class definition',
         'Winter\Storm\Database\Concerns\HasRelationships::$resolvedRelationMethods' => 'per-class method lists read from the class definition',
         'Winter\Storm\Database\Model::$eventsBooted' => 'per-class flag that model events are wired',
         'Winter\Storm\Extension\ExtendableTrait::$extendableClassLoader' => 'the class loader',
