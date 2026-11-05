@@ -76,6 +76,8 @@ A long-running worker can hold on to work that PHP-FPM has to repeat, so the plu
 
 **Theme templates.** If a theme reads from a plain `FileDatasource`, the worker reads it through `WorkerFileDatasource` instead. That class remembers resolved paths and file contents, but still stats the file on every read, so you'll see a template change on the next read. It leaves subclasses of `FileDatasource` alone, along with the `AutoDatasource` that core builds for child themes and database templates.
 
+The worker also keeps the templates Halcyon parsed from those themes in memory, instead of reading them from the cache store on every request. Halcyon still compares each one's modification time with the file's before using it, as it does with the cache store's copy, so an edit on disk or in the back-end editor reaches the next request in every worker. Emptying the cache store, for example with `php artisan cache:clear`, drops them from every worker's memory too. To drop them without emptying the store, forget the `winter.octane.template-generation` cache key.
+
 Symlinks inside a theme get checked on every read. If you repoint a symlink on the theme directory or a directory above it while a worker is running, reload the worker.
 
 **Parsed YAML.** With `app.debug` off, values cached by `Yaml::parseFile()` stay in the worker's memory between requests. The file's modification time is part of the cache key, so an edit that changes it gets parsed again.
@@ -112,7 +114,7 @@ If your plugin requires this one, you can add `implements \Winter\Octane\Contrac
 
 ### Keeping cache values between requests
 
-The reset also empties the in-memory layer of Winter's cache stores, so apart from parsed YAML, anything your request read from the cache gets read from the store again next time. To keep values that every request needs, such as site-wide settings, define `keepWorkerCacheValue()`. It runs at the start of every Octane operation for each key in memory, and a value stays when it returns `true`:
+The reset also empties the in-memory layer of Winter's cache stores, so apart from parsed YAML and theme templates, anything your request read from the cache gets read from the store again next time. To keep values that every request needs, such as site-wide settings, define `keepWorkerCacheValue()`. It runs at the start of every Octane operation for each key in memory, and a value stays when it returns `true`:
 
 ```php
 public function keepWorkerCacheValue(string $key, $value): bool
