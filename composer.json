@@ -11,7 +11,7 @@
         }
     ],
     "require": {
-        "php": ">=8.1",
+        "php": "^8.2",
         "composer/installers": "~1.0 || ~2.0",
         "laravel/octane": "^2.5",
         "winter/storm": "^1.3"

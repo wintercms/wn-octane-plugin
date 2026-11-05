@@ -19,7 +19,7 @@ What the plugin does:
 ## Requirements
 
 - Winter CMS 1.3 with [wintercms/storm#241](https://github.com/wintercms/storm/pull/241). That pull request fixes event listeners registered against an interface, and Octane uses one for its cleanup.
-- PHP 8.1 or later.
+- PHP 8.2 or later.
 - An application server Octane supports: FrankenPHP, Swoole or RoadRunner. You can start it with `octane:start` or with `octane:frankenphp`, `octane:swoole` or `octane:roadrunner`. The plugin replaces those last three commands so that only Winter's public files get served (more on that below).
 
 ## Installation
