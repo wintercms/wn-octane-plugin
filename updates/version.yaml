@@ -12,3 +12,5 @@
     - Make theme template reads, parsed YAML and worker start cheaper in a worker.
 1.4.0:
     - Send a one-week Cache-Control header with public files, and accept global FrankenPHP options through WINTER_OCTANE_FRANKENPHP_OPTIONS.
+1.5.0:
+    - Keep parsed theme templates in worker memory between requests, and require PHP 8.2.
