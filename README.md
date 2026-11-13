@@ -130,6 +130,35 @@ A few things to watch for:
 - If your method throws, the exception gets logged and that key gets flushed. Nothing stays when the worker itself handles an error, such as an exception that escapes the HTTP kernel.
 - This method also runs before the incoming request is bound, so don't read the current request here. If your plugin requires this one, you can add `implements \Winter\Octane\Contracts\KeepsWorkerCacheValues`.
 
+### Finding leaks with PHPStan
+
+The plugin ships PHPStan rules that find static state a worker would carry from one request to the next. Add the extension to your project's `phpstan.neon`:
+
+```neon
+includes:
+    - plugins/winter/octane/phpstan/extension.neon
+```
+
+It reports two things:
+
+- `winterOctane.staticPropertyNotReset`: request code writes a static property, and nothing clears it before the next request.
+- `winterOctane.staticVariable`: a `static $var` inside a function, which nothing outside the function can clear.
+
+A static property counts as cleared when a plugin's `resetWorkerState()` (or a method it calls directly) writes it, when code further down that call chain assigns it a constant such as `[]` or `null` or unsets it, when a `terminating()` callback or a `RequestReceived` listener clears it, or when this plugin's own reset lists include it. The rules skip test code, writes made while the worker boots (a plugin's `register()` and `boot()`, and functions only those call), a property the same function puts back in a `finally` block, `WeakMap` properties, and values computed only from constants, reflection and pure built-in functions.
+
+To fix a finding, clear the property in your plugin's `resetWorkerState()`. When keeping the value is safe, for example because every request would compute the same value, mark the property and say why:
+
+```php
+use Winter\Octane\Attributes\WorkerScoped;
+
+#[WorkerScoped('Parsed from the YAML files in the plugin.')]
+protected static ?array $fieldConfigs = null;
+```
+
+The rule matches any attribute named `WorkerScoped`, so a plugin that also runs without this one can declare its own. For a `static $var`, put a `/** @octane-worker-scoped <reason> */` docblock above the statement.
+
+PHPStan's result cache does not notice changes to the rules' helper classes. Run `vendor/bin/phpstan clear-result-cache` after updating this plugin.
+
 ## Tests
 
 The test suite boots one application and sends requests through Octane's `ApplicationGateway`, the same path a worker uses. Run it from the plugin directory inside a Winter installation:

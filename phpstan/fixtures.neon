@@ -1,0 +1,12 @@
+includes:
+    - extension.neon
+
+parameters:
+    level: 0
+    paths:
+        - fixtures
+    tmpDir: ../../../../storage/temp/phpstan-winter-octane-fixtures
+    bootstrapFiles:
+        - ../phpstan-bootstrap.php
+    scanDirectories:
+        - ../../../../modules/system

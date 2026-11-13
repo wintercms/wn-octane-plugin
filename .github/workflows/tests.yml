@@ -84,7 +84,7 @@ jobs:
         working-directory: winter/plugins/winter/octane
         run: |
           composer validate --strict --no-check-lock
-          ../../../vendor/bin/parallel-lint Plugin.php routes.php classes contracts tests
+          ../../../vendor/bin/parallel-lint Plugin.php routes.php attributes classes contracts phpstan tests
           ../../../vendor/bin/phpcs --standard=phpcs.xml.dist
 
       - name: Static analysis

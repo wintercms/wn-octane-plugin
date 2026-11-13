@@ -1,0 +1,24 @@
+includes:
+    - autoload.php
+
+rules:
+    - Winter\Octane\PHPStan\StaticStateRule
+    - Winter\Octane\PHPStan\StaticVariableRule
+
+services:
+    -
+        class: Winter\Octane\PHPStan\StaticPropertyWriteCollector
+        tags:
+            - phpstan.collector
+    -
+        class: Winter\Octane\PHPStan\CallEdgeCollector
+        tags:
+            - phpstan.collector
+    -
+        class: Winter\Octane\PHPStan\ReflectionResetCollector
+        tags:
+            - phpstan.collector
+    -
+        class: Winter\Octane\PHPStan\FinallyRestoreCollector
+        tags:
+            - phpstan.collector
