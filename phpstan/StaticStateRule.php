@@ -37,8 +37,7 @@ use PHPStan\Rules\RuleErrorBuilder;
  *   that only those call;
  * - the value comes only from code: constants, literals, reflection and pure built-in functions;
  * - a finally block in the same function clears the property (or the same array offset), or restores a value the
- *   function saved before and changes nowhere else, and the write is in the try block or in the plain assignments
- *   just before it;
+ *   function saved before and changes nowhere else, and the write is inside the try block;
  * - the property is a WeakMap, or is marked worker scoped (a WorkerScoped attribute, or the worker-scoped tag in
  *   its docblock or its class's), which says keeping the value for the worker's life is safe.
  * * A property declared in a trait is reported once for the trait, not once for each class that uses it.

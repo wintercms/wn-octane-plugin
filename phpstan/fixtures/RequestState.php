@@ -45,6 +45,10 @@ class RequestState
 
     public static int $restoredFromIncremented = 0;
 
+    public static array $restoredFromChangedArray = [];
+
+    public static ?string $setBeforeTry = null;
+
     public static array $restoredAtOffset = [];
 
     public static bool $flag = false;
@@ -168,8 +172,8 @@ class RequestState
      */
     public function withRestore(): void
     {
-        self::$restored = true;
         try {
+            self::$restored = true;
             $this->handle('restore');
         } finally {
             self::$restored = false;
@@ -201,9 +205,9 @@ class RequestState
      */
     public function withSavedRestore(string $user): void
     {
-        $previous                = self::$restoredFromSaved;
-        self::$restoredFromSaved = $user;
+        $previous = self::$restoredFromSaved;
         try {
+            self::$restoredFromSaved = $user;
             $this->handle($user);
         } finally {
             self::$restoredFromSaved = $previous;
@@ -252,6 +256,42 @@ class RequestState
     }
 
     /**
+     * Saves the old array, then changes one of its offsets, so finally does not put the old value back.
+     *
+     * @param string $user
+     *
+     * @return void
+     */
+    public function withChangedSavedArray(string $user): void
+    {
+        $previous = self::$restoredFromChangedArray;
+        try {
+            $previous['user']                = $user;
+            self::$restoredFromChangedArray = ['temporary' => $user]; // expect: winterOctane.staticPropertyNotReset
+        } finally {
+            self::$restoredFromChangedArray = $previous;
+        }
+    }
+
+    /**
+     * Sets the value before the try block. Even a plain read in between can throw (an uninitialized typed static), so
+     * only writes inside the try block count as protected.
+     *
+     * @param string $user
+     *
+     * @return void
+     */
+    public function withWriteBeforeTry(string $user): void
+    {
+        self::$setBeforeTry = $user; // expect: winterOctane.staticPropertyNotReset
+        try {
+            $this->handle($user);
+        } finally {
+            self::$setBeforeTry = null;
+        }
+    }
+
+    /**
      * Saves the old value, then increments the saved variable, so finally does not put the old value back.
      *
      * @param int $count
@@ -294,8 +334,8 @@ class RequestState
      */
     public function withWriteAfterCleanup(): void
     {
-        self::$writtenAfterCleanup = true;
         try {
+            self::$writtenAfterCleanup = true;
             $this->handle('cleanup');
         } finally {
             self::$writtenAfterCleanup = false;
@@ -313,8 +353,8 @@ class RequestState
      */
     public function withOffsetRestore(string $name): void
     {
-        self::$restoredAtOffset[$name] = true;
         try {
+            self::$restoredAtOffset[$name] = true;
             $this->handle($name);
         } finally {
             unset(self::$restoredAtOffset[$name]);

@@ -15,13 +15,12 @@ use PhpParser\Node\Expr\PostDec;
 use PhpParser\Node\Expr\PostInc;
 use PhpParser\Node\Expr\PreDec;
 use PhpParser\Node\Expr\PreInc;
+use PhpParser\Node\Expr\PropertyFetch;
 use PhpParser\Node\Expr\StaticPropertyFetch;
 use PhpParser\Node\Expr\Variable;
 use PhpParser\Node\FunctionLike;
-use PhpParser\Node\Name;
 use PhpParser\Node\Stmt;
 use PhpParser\Node\Stmt\Class_;
-use PhpParser\Node\Stmt\Expression;
 use PhpParser\Node\Stmt\Foreach_;
 use PhpParser\Node\Stmt\TryCatch;
 use PhpParser\Node\Stmt\Unset_;
@@ -35,9 +34,9 @@ use PHPStan\Reflection\ReflectionProvider;
  * nothing behind for the next request, so the rule skips those writes.
  *
  * The finally block has to clear the target (assign a constant or unset it) or assign it a local variable that the
- * function saved the property into (`$previous = self::$user;`) and changes nowhere else. The protected lines are the
- * try block and the plain assignments directly before it (of a variable, a constant or a static property, which cannot
- * throw), since a write there always reaches the try block.
+ * function saved the property into (`$previous = self::$user;`) and changes nowhere else, not even through an array
+ * offset. Only writes inside the try block are protected: a write before it can be followed by something that throws
+ * or returns, and then the finally block never runs.
  *
  * It needs the statements around each try block, so it runs once per method (FinallyRestoreMethodCollector) and once
  * per function (FinallyRestoreFunctionCollector). A try block inside a closure is not considered.
@@ -107,8 +106,8 @@ abstract class FinallyRestoreCollector implements Collector
     }
 
     /**
-     * The local variables a node changes: assignment targets (including list destructuring), `++` and `--`, unset(),
-     * foreach targets and variables a closure takes by reference.
+     * The local variables a node changes: assignment targets (including list destructuring and writes to an offset or
+     * property of the variable), `++` and `--`, unset(), foreach targets and variables a closure takes by reference.
      *
      * @param Node $node
      *
@@ -146,48 +145,15 @@ abstract class FinallyRestoreCollector implements Collector
                         $targets[] = $item->value;
                     }
                 }
+            } elseif ($target instanceof ArrayDimFetch || $target instanceof PropertyFetch) {
+                // A write to an offset or a property of a local array or object changes that local variable.
+                $targets[] = $target->var;
             } else {
-                // Properties, array offsets and static properties are not local variables.
+                // Static properties are not local variables.
             }
         }
 
         return $names;
-    }
-
-    /**
-     * Whether a statement before a try block always lets execution reach the block: a plain assignment of a variable,
-     * a constant or a static property to a variable, a static property or an array offset of those. Anything that
-     * calls code (a function, a method, a constructor, a property hook) may throw, and then the try block never runs.
-     *
-     * @param Stmt $stmt
-     *
-     * @return bool
-     */
-    private static function isStraightLine(Stmt $stmt): bool
-    {
-        if (!$stmt instanceof Expression || !$stmt->expr instanceof Assign) {
-            return false;
-        }
-
-        $value = $stmt->expr->expr;
-        if (
-            !$value instanceof Variable
-            && !PureExpression::isConstant($value)
-            && !($value instanceof StaticPropertyFetch && $value->class instanceof Name)
-        ) {
-            return false;
-        }
-
-        $target = $stmt->expr->var;
-        while ($target instanceof ArrayDimFetch) {
-            if ($target->dim !== null && !$target->dim instanceof Variable && !PureExpression::isConstant($target->dim)) {
-                return false;
-            }
-
-            $target = $target->var;
-        }
-
-        return $target instanceof Variable || ($target instanceof StaticPropertyFetch && $target->class instanceof Name);
     }
 
     /**
@@ -225,46 +191,20 @@ abstract class FinallyRestoreCollector implements Collector
 
         $function = StaticWriteTarget::functionKey($scope);
         $restored = [];
-        // The function body and every statement list nested in it (if, loop, try, catch and finally blocks).
-        $lists = [array_values($body)];
-        foreach ($all as $child) {
-            if ($child instanceof FunctionLike || $child instanceof Class_) {
+        foreach ($all as $stmt) {
+            if (!$stmt instanceof TryCatch || $stmt->finally === null || $stmt->stmts === []) {
                 continue;
             }
 
-            foreach ($child->getSubNodeNames() as $name) {
-                if (is_array($child->$name)) {
-                    $lists[] = array_values($child->$name);
-                }
-            }
-        }
-
-        foreach ($lists as $list) {
-            foreach ($list as $index => $stmt) {
-                if (!$stmt instanceof TryCatch || $stmt->finally === null || $stmt->stmts === []) {
-                    continue;
-                }
-
-                $windowStart = $stmt->getStartLine();
-                for ($before = $index - 1; $before >= 0; $before--) {
-                    $previous = $list[$before];
-                    if (!$previous instanceof Stmt || !self::isStraightLine($previous)) {
-                        break;
-                    }
-
-                    $windowStart = $previous->getStartLine();
-                }
-
-                foreach ($this->restores($stmt, $scope, $saves, $assignments) as $property) {
-                    $restored[] = [
-                        $function,
-                        $property,
-                        $windowStart,
-                        $stmt->stmts[count($stmt->stmts) - 1]->getEndLine(),
-                        $stmt->finally->getStartLine(),
-                        $stmt->finally->getEndLine(),
-                    ];
-                }
+            foreach ($this->restores($stmt, $scope, $saves, $assignments) as $property) {
+                $restored[] = [
+                    $function,
+                    $property,
+                    $stmt->stmts[0]->getStartLine(),
+                    $stmt->stmts[count($stmt->stmts) - 1]->getEndLine(),
+                    $stmt->finally->getStartLine(),
+                    $stmt->finally->getEndLine(),
+                ];
             }
         }
 
