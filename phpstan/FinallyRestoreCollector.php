@@ -7,18 +7,24 @@ use PhpParser\Node\Expr;
 use PhpParser\Node\Expr\Assign;
 use PhpParser\Node\Expr\AssignOp;
 use PhpParser\Node\Expr\AssignRef;
-use PhpParser\Node\Expr\Exit_;
+use PhpParser\Node\Expr\Array_;
+use PhpParser\Node\Expr\ArrayDimFetch;
+use PhpParser\Node\Expr\Closure;
+use PhpParser\Node\Expr\List_;
+use PhpParser\Node\Expr\PostDec;
+use PhpParser\Node\Expr\PostInc;
+use PhpParser\Node\Expr\PreDec;
+use PhpParser\Node\Expr\PreInc;
 use PhpParser\Node\Expr\StaticPropertyFetch;
-use PhpParser\Node\Expr\Throw_;
 use PhpParser\Node\Expr\Variable;
 use PhpParser\Node\FunctionLike;
+use PhpParser\Node\Name;
 use PhpParser\Node\Stmt;
 use PhpParser\Node\Stmt\Class_;
 use PhpParser\Node\Stmt\Expression;
 use PhpParser\Node\Stmt\Foreach_;
 use PhpParser\Node\Stmt\TryCatch;
 use PhpParser\Node\Stmt\Unset_;
-use PhpParser\NodeFinder;
 use PHPStan\Analyser\Scope;
 use PHPStan\Collectors\Collector;
 use PHPStan\Reflection\ReflectionProvider;
@@ -29,9 +35,9 @@ use PHPStan\Reflection\ReflectionProvider;
  * nothing behind for the next request, so the rule skips those writes.
  *
  * The finally block has to clear the target (assign a constant or unset it) or assign it a local variable that the
- * function saved the property into (`$previous = self::$user;`) and assigns nowhere else. The protected lines are the
- * try block and the plain statements directly before it, with no return, throw, exit or branch in between, since a
- * write there always reaches the try block.
+ * function saved the property into (`$previous = self::$user;`) and changes nowhere else. The protected lines are the
+ * try block and the plain assignments directly before it (of a variable, a constant or a static property, which cannot
+ * throw), since a write there always reaches the try block.
  *
  * It needs the statements around each try block, so it runs once per method (FinallyRestoreMethodCollector) and once
  * per function (FinallyRestoreFunctionCollector). A try block inside a closure is not considered.
@@ -50,7 +56,7 @@ abstract class FinallyRestoreCollector implements Collector
 
     /**
      * Whether a value assigned in a finally block clears the property (a constant) or restores it (a local variable
-     * the function saved this property into and assigns nowhere else).
+     * the function saved this property into and changes nowhere else).
      *
      * @param Expr                  $value
      * @param string                $key
@@ -101,8 +107,57 @@ abstract class FinallyRestoreCollector implements Collector
     }
 
     /**
-     * Whether a statement can run before a try block without any way to skip the block: an expression statement or
-     * unset() with no throw or exit in it.
+     * The local variables a node changes: assignment targets (including list destructuring), `++` and `--`, unset(),
+     * foreach targets and variables a closure takes by reference.
+     *
+     * @param Node $node
+     *
+     * @return list<string>
+     */
+    private static function changedVariables(Node $node): array
+    {
+        $targets = [];
+        if ($node instanceof Assign || $node instanceof AssignOp || $node instanceof AssignRef) {
+            $targets[] = $node->var;
+        } elseif ($node instanceof PreInc || $node instanceof PostInc || $node instanceof PreDec || $node instanceof PostDec) {
+            $targets[] = $node->var;
+        } elseif ($node instanceof Unset_) {
+            $targets = $node->vars;
+        } elseif ($node instanceof Foreach_) {
+            $targets = array_filter([$node->keyVar, $node->valueVar]);
+        } elseif ($node instanceof Closure) {
+            foreach ($node->uses as $use) {
+                if ($use->byRef) {
+                    $targets[] = $use->var;
+                }
+            }
+        } else {
+            return [];
+        }
+
+        $names = [];
+        while ($targets !== []) {
+            $target = array_pop($targets);
+            if ($target instanceof Variable && is_string($target->name)) {
+                $names[] = $target->name;
+            } elseif ($target instanceof List_ || $target instanceof Array_) {
+                foreach ($target->items as $item) {
+                    if ($item !== null) {
+                        $targets[] = $item->value;
+                    }
+                }
+            } else {
+                // Properties, array offsets and static properties are not local variables.
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Whether a statement before a try block always lets execution reach the block: a plain assignment of a variable,
+     * a constant or a static property to a variable, a static property or an array offset of those. Anything that
+     * calls code (a function, a method, a constructor, a property hook) may throw, and then the try block never runs.
      *
      * @param Stmt $stmt
      *
@@ -110,14 +165,29 @@ abstract class FinallyRestoreCollector implements Collector
      */
     private static function isStraightLine(Stmt $stmt): bool
     {
-        if (!$stmt instanceof Expression && !$stmt instanceof Unset_) {
+        if (!$stmt instanceof Expression || !$stmt->expr instanceof Assign) {
             return false;
         }
 
-        return (new NodeFinder())->findFirst(
-            [$stmt],
-            fn (Node $node): bool => $node instanceof Throw_ || $node instanceof Exit_
-        ) === null;
+        $value = $stmt->expr->expr;
+        if (
+            !$value instanceof Variable
+            && !PureExpression::isConstant($value)
+            && !($value instanceof StaticPropertyFetch && $value->class instanceof Name)
+        ) {
+            return false;
+        }
+
+        $target = $stmt->expr->var;
+        while ($target instanceof ArrayDimFetch) {
+            if ($target->dim !== null && !$target->dim instanceof Variable && !PureExpression::isConstant($target->dim)) {
+                return false;
+            }
+
+            $target = $target->var;
+        }
+
+        return $target instanceof Variable || ($target instanceof StaticPropertyFetch && $target->class instanceof Name);
     }
 
     /**
@@ -132,27 +202,23 @@ abstract class FinallyRestoreCollector implements Collector
     {
         $all  = self::descendants($body);
 
-        // Local variables that hold a saved static property, and how many times each local variable is assigned.
+        // Local variables that hold a saved static property, and how many times each local variable is changed.
         $assignments = [];
         $saves       = [];
         foreach ($all as $child) {
-            if ($child instanceof Assign || $child instanceof AssignOp || $child instanceof AssignRef) {
-                $target = $child->var;
-            } elseif ($child instanceof Foreach_) {
-                $target = $child->valueVar;
-            } else {
+            foreach (self::changedVariables($child) as $name) {
+                $assignments[$name] = ($assignments[$name] ?? 0) + 1;
+            }
+
+            if (!$child instanceof Assign || !$child->var instanceof Variable || !$child->expr instanceof StaticPropertyFetch) {
                 continue;
             }
 
-            if (!$target instanceof Variable || !is_string($target->name)) {
-                continue;
-            }
-
-            $assignments[$target->name] = ($assignments[$target->name] ?? 0) + 1;
-            if ($child instanceof Assign && $child->expr instanceof StaticPropertyFetch) {
+            $name = $child->var->name;
+            if (is_string($name)) {
                 $resolved = StaticWriteTarget::resolve($child->expr, $scope, $this->reflectionProvider);
                 if ($resolved !== null) {
-                    $saves[$target->name] = $resolved['class'] . '::$' . $resolved['property'];
+                    $saves[$name] = $resolved['class'] . '::$' . $resolved['property'];
                 }
             }
         }
@@ -211,7 +277,7 @@ abstract class FinallyRestoreCollector implements Collector
      * @param TryCatch              $try
      * @param Scope                 $scope
      * @param array<string, string> $saves       Local variable => the static property saved into it.
-     * @param array<string, int>    $assignments Local variable => how many times the function assigns it.
+     * @param array<string, int>    $assignments Local variable => how many times the function changes it.
      *
      * @return list<string>
      */

@@ -41,6 +41,10 @@ class RequestState
 
     public static ?string $restoredFromOverwritten = null;
 
+    public static ?string $skippedByThrow = null;
+
+    public static int $restoredFromIncremented = 0;
+
     public static array $restoredAtOffset = [];
 
     public static bool $flag = false;
@@ -225,6 +229,43 @@ class RequestState
             $this->handle($user);
         } finally {
             self::$skippedByReturn = null;
+        }
+    }
+
+    /**
+     * Calls code between the write and the try block; if it throws, the finally block never runs.
+     *
+     * @param string $user
+     *
+     * @return void
+     */
+    public function withCallBeforeTry(string $user): void
+    {
+        self::$skippedByThrow = $user; // expect: winterOctane.staticPropertyNotReset
+        $this->handle($user);
+
+        try {
+            $this->handle($user);
+        } finally {
+            self::$skippedByThrow = null;
+        }
+    }
+
+    /**
+     * Saves the old value, then increments the saved variable, so finally does not put the old value back.
+     *
+     * @param int $count
+     *
+     * @return void
+     */
+    public function withIncrementedSave(int $count): void
+    {
+        $previous = self::$restoredFromIncremented;
+        try {
+            ++$previous;
+            self::$restoredFromIncremented = $count; // expect: winterOctane.staticPropertyNotReset
+        } finally {
+            self::$restoredFromIncremented = $previous;
         }
     }
 
