@@ -30,3 +30,7 @@ services:
         class: Winter\Octane\PHPStan\FinallyRestoreCollector
         tags:
             - phpstan.collector
+    -
+        class: Winter\Octane\PHPStan\StaticSaveCollector
+        tags:
+            - phpstan.collector

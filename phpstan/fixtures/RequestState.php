@@ -29,6 +29,14 @@ class RequestState
 
     public static array $partlyRestored = [];
 
+    public static array $partlyReset = [];
+
+    public static ?string $keptByFinally = null;
+
+    public static ?string $restoredFromSaved = null;
+
+    public static bool $writtenAfterCleanup = false;
+
     public static array $restoredAtOffset = [];
 
     public static bool $flag = false;
@@ -139,6 +147,7 @@ class RequestState
         self::$clearedByNonPlugin[]    = $user; // expect: winterOctane.staticPropertyNotReset
         self::$clearedByPluginWithoutCalls[] = $user;
         self::addFilled($user);
+        self::$partlyReset[$user] = $user; // expect: winterOctane.staticPropertyNotReset
 
         // Winter.Octane clears this one itself (ResetsRequestState::STATIC_CACHES).
         \System\Models\Parameter::$cache[$user] = $user;
@@ -157,6 +166,57 @@ class RequestState
         } finally {
             self::$restored = false;
         }
+    }
+
+    /**
+     * Assigns the request's value again in finally, which keeps it instead of restoring anything.
+     *
+     * @param string $user
+     *
+     * @return void
+     */
+    public function withFinallyThatKeepsTheValue(string $user): void
+    {
+        try {
+            self::$keptByFinally = $user; // expect: winterOctane.staticPropertyNotReset
+        } finally {
+            self::$keptByFinally = $user;
+        }
+    }
+
+    /**
+     * Saves the old value and puts it back in finally.
+     *
+     * @param string $user
+     *
+     * @return void
+     */
+    public function withSavedRestore(string $user): void
+    {
+        $previous                = self::$restoredFromSaved;
+        self::$restoredFromSaved = $user;
+        try {
+            $this->handle($user);
+        } finally {
+            self::$restoredFromSaved = $previous;
+        }
+    }
+
+    /**
+     * Clears the flag in a finally block, then sets it again after the block, where nothing clears it.
+     *
+     * @return void
+     */
+    public function withWriteAfterCleanup(): void
+    {
+        self::$writtenAfterCleanup = true;
+        try {
+            $this->handle('cleanup');
+        } finally {
+            self::$writtenAfterCleanup = false;
+        }
+
+        self::$writtenAfterCleanup = true; // expect: winterOctane.staticPropertyNotReset
     }
 
     /**

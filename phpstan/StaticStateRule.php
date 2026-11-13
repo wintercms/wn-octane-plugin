@@ -25,8 +25,9 @@ use PHPStan\Rules\RuleErrorBuilder;
  * safe when:
  * - a plugin's resetWorkerState(), or a method it calls directly, writes the same property (a setter called with
  *   `null` counts), or code further down that call graph clears it: assigns a constant such as `[]` or `null`,
- *   unsets it, or sets it by name through reflection. Deeper reset code that fills a property does not count,
- *   since the same code may also run during a request;
+ *   unsets it, or sets it by name through reflection. Only a write to the whole property counts, not one array
+ *   offset. Deeper reset code that fills a property does not count, since the same code may also run during a
+ *   request;
  * - a closure that runs at a request boundary (an Octane operation event listener or a terminating() callback)
  *   clears it in its body or in a method it calls directly. A boundary closure is not followed further, because
  *   it often does conditional work;
@@ -34,7 +35,8 @@ use PHPStan\Rules\RuleErrorBuilder;
  * - it happens in test code, or while the worker starts: in a plugin's register() or boot(), or in a function
  *   that only those call;
  * - the value comes only from code: constants, literals, reflection and pure built-in functions;
- * - the function writing it puts the property, or the same array offset, back in a `finally` block;
+ * - the function writing it, before the end of a try block, clears the property (or the same array offset) in the
+ *   finally block or restores the value it saved before;
  * - the property is a WeakMap, or is marked worker scoped (a WorkerScoped attribute, or the worker-scoped tag in
  *   its docblock or its class's), which says keeping the value for the worker's life is safe.
  * * A property declared in a trait is reported once for the trait, not once for each class that uses it.
@@ -234,8 +236,15 @@ final class StaticStateRule implements Rule
 
         $coveredNames = $this->reflectionResetNames($node->get(ReflectionResetCollector::class), $resetReachable);
         $restored     = [];
-        foreach ($this->flatten($node->get(FinallyRestoreCollector::class)) as [$function, $property]) {
-            $restored[$function][$property] = true;
+        foreach ($this->flatten($node->get(FinallyRestoreCollector::class)) as [$function, $property, $tryEnd, $variable, $finallyStart, $finallyEnd]) {
+            $restored[$function][$property][] = [$tryEnd, $variable, $finallyStart, $finallyEnd];
+        }
+
+        $saved = [];
+        foreach ($node->get(StaticSaveCollector::class) as $perNode) {
+            foreach ($perNode as [$function, $variable, $property]) {
+                $saved[$function][$variable][$property] = true;
+            }
         }
 
         $pending = [];
@@ -243,9 +252,12 @@ final class StaticStateRule implements Rule
         foreach ($this->flatten($node->get(StaticPropertyWriteCollector::class)) as $write) {
             $key = $write['class'] . '::$' . $write['property'];
             if (
-                $write['resetRoot']
-                || isset($resetDirect[$write['function']])
-                || (isset($resetReachable[$write['function']]) && $write['storesConstant'])
+                $write['offset'] === ''
+                && (
+                    $write['resetRoot']
+                    || isset($resetDirect[$write['function']])
+                    || (isset($resetReachable[$write['function']]) && $write['storesConstant'])
+                )
             ) {
                 $covered[$key] = true;
                 continue;
@@ -258,8 +270,7 @@ final class StaticStateRule implements Rule
                 || (!$write['inClosure'] && isset($startOnly[$write['function']]))
                 || $write['derivedFromCode']
                 || isset($coveredNames[$write['property']])
-                || isset($restored[$write['function']][$key])
-                || ($write['offset'] !== '' && isset($restored[$write['function']][$key . $write['offset']]))
+                || $this->isRestored($write, $key, $restored, $saved)
             ) {
                 continue;
             }
@@ -287,6 +298,39 @@ final class StaticStateRule implements Rule
         return $errors;
     }
 
+    /**
+     * Whether a finally block in the same function puts the written property (or the written offset) back: the write
+     * comes before the end of the try block (or is the finally block's own write), and the block clears the target or
+     * assigns it the local variable the function saved the property into.
+     *
+     * @param array{function: string, offset: string, line: int} $write
+     * @param string $key
+     * @param array<string, array<string, list<array{0: int, 1: string|null, 2: int, 3: int}>>> $restored
+     * @param array<string, array<string, array<string, true>>> $saved
+     *
+     * @return bool
+     */
+    private function isRestored(array $write, string $key, array $restored, array $saved): bool
+    {
+        $targets = [$key];
+        if ($write['offset'] !== '') {
+            $targets[] = $key . $write['offset'];
+        }
+
+        foreach ($targets as $target) {
+            foreach ($restored[$write['function']][$target] ?? [] as [$tryEnd, $variable, $finallyStart, $finallyEnd]) {
+                $inFinally = $write['line'] >= $finallyStart && $write['line'] <= $finallyEnd;
+                if (
+                    ($inFinally || $write['line'] <= $tryEnd)
+                    && ($variable === null || isset($saved[$write['function']][$variable][$key]))
+                ) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
     /**
      * Every function reachable from the roots through the recorded calls.
      *

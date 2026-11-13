@@ -131,7 +131,7 @@ final class CallEdgeCollector implements Collector
         }
 
         foreach ($finder->findInstanceOf($listener, Assign::class) as $assign) {
-            if (!PureExpression::isConstant($assign->expr)) {
+            if (!PureExpression::isConstant($assign->expr) || StaticWriteTarget::offsetPath($assign->var) !== '') {
                 continue;
             }
 
