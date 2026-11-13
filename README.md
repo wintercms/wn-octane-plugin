@@ -155,7 +155,7 @@ use Winter\Octane\Attributes\WorkerScoped;
 protected static ?array $fieldConfigs = null;
 ```
 
-The rule matches any attribute named `WorkerScoped`, so a plugin that also runs without this one can declare its own. For a `static $var`, put a `/** @octane-worker-scoped <reason> */` docblock above the statement.
+The rule matches any attribute named `WorkerScoped`, so a plugin that also runs without this one can declare its own, as long as PHPStan can find that class. For a `static $var`, put a `/** @octane-worker-scoped <reason> */` docblock above the statement.
 
 PHPStan's result cache does not notice changes to the rules' helper classes. Run `vendor/bin/phpstan clear-result-cache` after updating this plugin.
 

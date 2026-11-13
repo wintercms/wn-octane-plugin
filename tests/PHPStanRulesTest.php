@@ -93,11 +93,14 @@ class PHPStanRulesTest extends TestCase
      */
     private function execute(array $command): array
     {
-        $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        // Standard error goes to a file: reading two pipes one after the other can block when the second fills up.
+        $errorFile = (string) tempnam(sys_get_temp_dir(), 'phpstan-stderr');
+        $process   = proc_open($command, [1 => ['pipe', 'w'], 2 => ['file', $errorFile, 'w']], $pipes);
         $this->assertIsResource($process);
         $stdout = (string) stream_get_contents($pipes[1]);
-        $stderr = (string) stream_get_contents($pipes[2]);
         proc_close($process);
+        $stderr = (string) file_get_contents($errorFile);
+        unlink($errorFile);
 
         return [$stdout, $stderr];
     }

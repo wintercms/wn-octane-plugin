@@ -3,7 +3,7 @@
     // The reset and the plugin's registration: the code whose every line must be needed by a test.
     "source": {
         "directories": ["."],
-        "excludes": [".github", "caddy", "console", "contracts", "tests", "updates", "vendor", "routes.php"]
+        "excludes": [".github", "attributes", "caddy", "console", "contracts", "phpstan", "tests", "updates", "vendor", "routes.php"]
     },
     // Winter's class loader, not Composer's, loads the modules' classes, which Infection reads while
     // it builds the mutants.
