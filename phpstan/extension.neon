@@ -1,0 +1,36 @@
+includes:
+    - autoload.php
+
+# The rules read ResetsRequestState's reset lists and recognize the WorkerScoped attribute. The plugin's directories
+# are lowercase while its namespaces are not, so Composer's PSR-4 mapping cannot find these classes on a
+# case-sensitive filesystem; scanning the directories lets PHPStan find them either way.
+parameters:
+    scanDirectories:
+        - ../classes
+        - ../attributes
+
+rules:
+    - Winter\Octane\PHPStan\StaticStateRule
+    - Winter\Octane\PHPStan\StaticVariableRule
+
+services:
+    -
+        class: Winter\Octane\PHPStan\StaticPropertyWriteCollector
+        tags:
+            - phpstan.collector
+    -
+        class: Winter\Octane\PHPStan\CallEdgeCollector
+        tags:
+            - phpstan.collector
+    -
+        class: Winter\Octane\PHPStan\ReflectionResetCollector
+        tags:
+            - phpstan.collector
+    -
+        class: Winter\Octane\PHPStan\FinallyRestoreMethodCollector
+        tags:
+            - phpstan.collector
+    -
+        class: Winter\Octane\PHPStan\FinallyRestoreFunctionCollector
+        tags:
+            - phpstan.collector

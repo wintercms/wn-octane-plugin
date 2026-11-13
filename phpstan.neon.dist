@@ -8,6 +8,10 @@ parameters:
         - classes
         - console
         - contracts
+        - attributes
+        - phpstan
+    excludePaths:
+        - phpstan/fixtures
     level: 8
     bootstrapFiles:
         - phpstan-bootstrap.php

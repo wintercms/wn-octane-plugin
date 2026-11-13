@@ -101,6 +101,9 @@ class CoreStateDiscoveryTest extends PluginTestCase
         // Set and cleared around a single call.
         'Winter\Storm\Extension\ExtensionTrait::$extendableStaticCalledClass' => 'set for one static extension call and cleared after it, including when it throws (storm#262)',
 
+        // A counter that only keeps generated names unique.
+        'System\Twig\FilterTokenParser::$blockSalt' => 'disambiguates compiled filter block names; its value never reaches the output',
+
         // Decided once, from the request the worker boots with.
         'System\Classes\PluginManager::$noInit' => 'set at boot for privileged routes; this plugin is elevated, so its reset runs either way',
 

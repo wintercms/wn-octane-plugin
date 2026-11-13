@@ -17,6 +17,8 @@
     <rule ref="PSR1.Classes.ClassDeclaration.MultipleClasses">
         <!-- Test cases can declare their fixture classes alongside the test -->
         <exclude-pattern>*/tests/*</exclude-pattern>
+        <!-- The PHPStan rule fixtures declare several classes per file for the same reason -->
+        <exclude-pattern>*/phpstan/fixtures/*</exclude-pattern>
     </rule>
 
     <rule ref="PSR1.Files.SideEffects.FoundWithSymbols">
@@ -28,10 +30,12 @@
     <arg name="colors" />
 
     <file>Plugin.php</file>
+    <file>attributes/</file>
     <file>routes.php</file>
     <file>classes/</file>
     <file>console/</file>
     <file>contracts/</file>
+    <file>phpstan/</file>
     <file>tests/</file>
 
     <exclude-pattern>*/vendor/*</exclude-pattern>

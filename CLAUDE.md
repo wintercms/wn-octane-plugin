@@ -56,7 +56,7 @@ Run these from `plugins/winter/octane`:
 - One test: `../../../vendor/bin/phpunit --filter testName`
 - Code style: `../../../vendor/bin/phpcs --standard=phpcs.xml.dist`, fix with `../../../vendor/bin/phpcbf --standard=phpcs.xml.dist`
 - Static analysis: `../../../vendor/bin/phpstan analyse -c phpstan.neon.dist --memory-limit=1G`
-- Syntax: `../../../vendor/bin/parallel-lint Plugin.php routes.php classes contracts tests`
+- Syntax: `../../../vendor/bin/parallel-lint Plugin.php routes.php attributes classes contracts phpstan tests`
 - Composer metadata: `composer validate --strict --no-check-lock`
 - Review script tests: `node --test .github/scripts/code-review.test.js`
 - Workflow lint: `actionlint`

@@ -11,5 +11,7 @@
 /phpcs.xml.dist export-ignore
 /phpstan.neon.dist export-ignore
 /phpstan-bootstrap.php export-ignore
+/phpstan/fixtures export-ignore
+/phpstan/fixtures.neon export-ignore
 /phpunit.xml export-ignore
 /infection.json5 export-ignore

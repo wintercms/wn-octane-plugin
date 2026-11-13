@@ -16,9 +16,11 @@
     </testsuites>
     <source ignoreIndirectDeprecations="true">
         <include>
+            <directory>./attributes</directory>
             <directory>./classes</directory>
             <directory>./console</directory>
             <directory>./contracts</directory>
+            <directory>./phpstan</directory>
             <directory>./tests</directory>
             <file>./Plugin.php</file>
             <file>./routes.php</file>
