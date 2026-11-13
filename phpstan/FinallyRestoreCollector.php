@@ -2,10 +2,20 @@
 
 namespace Winter\Octane\PHPStan;
 
-use Winter\Octane\PHPStan\StaticWriteTarget;
 use PhpParser\Node;
+use PhpParser\Node\Expr;
 use PhpParser\Node\Expr\Assign;
+use PhpParser\Node\Expr\AssignOp;
+use PhpParser\Node\Expr\AssignRef;
+use PhpParser\Node\Expr\Exit_;
+use PhpParser\Node\Expr\StaticPropertyFetch;
+use PhpParser\Node\Expr\Throw_;
 use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\FunctionLike;
+use PhpParser\Node\Stmt;
+use PhpParser\Node\Stmt\Class_;
+use PhpParser\Node\Stmt\Expression;
+use PhpParser\Node\Stmt\Foreach_;
 use PhpParser\Node\Stmt\TryCatch;
 use PhpParser\Node\Stmt\Unset_;
 use PhpParser\NodeFinder;
@@ -14,16 +24,22 @@ use PHPStan\Collectors\Collector;
 use PHPStan\Reflection\ReflectionProvider;
 
 /**
- * Records static properties that a `finally` block reassigns or unsets, as a whole or at one array offset, keyed by
- * the function it sits in. A function that sets a static and puts it back in `finally` leaves nothing behind for the
- * next request, so the rule skips its writes to that property, or to that offset when the `finally` names the same
- * one (`self::$held[$name] = true; ... finally { unset(self::$held[$name]); }`). Only writes up to the end of the
- * try block count, and the finally block has to clear the target (assign a constant or unset it) or assign it a local
- * variable the function saved the property into (`$previous = self::$user;`, see StaticSaveCollector).
+ * Records the static properties that a `finally` block puts back, as a whole or at one array offset, with the lines it
+ * protects, keyed by the function it sits in. A function that sets a static and puts it back in `finally` leaves
+ * nothing behind for the next request, so the rule skips those writes.
  *
- * @implements Collector<TryCatch, list<array{0: string, 1: string, 2: int, 3: string|null, 4: int, 5: int}>>
+ * The finally block has to clear the target (assign a constant or unset it) or assign it a local variable that the
+ * function saved the property into (`$previous = self::$user;`) and assigns nowhere else. The protected lines are the
+ * try block and the plain statements directly before it, with no return, throw, exit or branch in between, since a
+ * write there always reaches the try block.
+ *
+ * It needs the statements around each try block, so it runs once per method (FinallyRestoreMethodCollector) and once
+ * per function (FinallyRestoreFunctionCollector). A try block inside a closure is not considered.
+ *
+ * @template TNode of Node
+ * @implements Collector<TNode, list<array{0: string, 1: string, 2: int, 3: int, 4: int, 5: int}>>
  */
-final class FinallyRestoreCollector implements Collector
+abstract class FinallyRestoreCollector implements Collector
 {
     /**
      * @param ReflectionProvider $reflectionProvider
@@ -33,69 +49,209 @@ final class FinallyRestoreCollector implements Collector
     }
 
     /**
-     * @return string
+     * Whether a value assigned in a finally block clears the property (a constant) or restores it (a local variable
+     * the function saved this property into and assigns nowhere else).
+     *
+     * @param Expr                  $value
+     * @param string                $key
+     * @param array<string, string> $saves
+     * @param array<string, int>    $assignments
+     *
+     * @return bool
      */
-    public function getNodeType(): string
+    private static function clearsOrRestores(Expr $value, string $key, array $saves, array $assignments): bool
     {
-        return TryCatch::class;
+        if (PureExpression::isConstant($value)) {
+            return true;
+        }
+
+        return $value instanceof Variable
+            && is_string($value->name)
+            && ($saves[$value->name] ?? null) === $key
+            && ($assignments[$value->name] ?? 0) === 1;
     }
 
     /**
-     * @param TryCatch $node
-     * @param Scope $scope
+     * The nodes under the given ones, without descending into closures, arrow functions or classes.
      *
-     * @return list<array{0: string, 1: string, 2: int, 3: string|null, 4: int, 5: int}>|null
+     * @param array<Node> $nodes
+     *
+     * @return list<Node>
      */
-    public function processNode(Node $node, Scope $scope): ?array
+    private static function descendants(array $nodes): array
     {
-        if ($node->finally === null) {
-            return null;
-        }
+        $found = [];
+        foreach ($nodes as $node) {
+            $found[] = $node;
+            if ($node instanceof FunctionLike || $node instanceof Class_) {
+                continue;
+            }
 
-        if ($node->stmts === []) {
-            return null;
-        }
-
-        /*
-         * Each target with the local variable it is restored from, or null when the finally block clears it (assigns
-         * a constant or unsets it). Any other value, such as one the request computed, restores nothing.
-         */
-        $targets = [];
-        $finder  = new NodeFinder();
-        foreach ($finder->findInstanceOf($node->finally->stmts, Assign::class) as $assign) {
-            if (PureExpression::isConstant($assign->expr)) {
-                $targets[] = [$assign->var, null];
-            } elseif ($assign->expr instanceof Variable && is_string($assign->expr->name)) {
-                $targets[] = [$assign->var, $assign->expr->name];
-            } else {
-                // The block stores a new value instead of putting the old one back.
+            foreach ($node->getSubNodeNames() as $name) {
+                $child    = $node->$name;
+                $children = array_values(array_filter(
+                    is_array($child) ? $child : [$child],
+                    fn ($item): bool => $item instanceof Node
+                ));
+                array_push($found, ...self::descendants($children));
             }
         }
 
-        foreach ($finder->findInstanceOf($node->finally->stmts, Unset_::class) as $unset) {
-            foreach ($unset->vars as $var) {
-                $targets[] = [$var, null];
+        return $found;
+    }
+
+    /**
+     * Whether a statement can run before a try block without any way to skip the block: an expression statement or
+     * unset() with no throw or exit in it.
+     *
+     * @param Stmt $stmt
+     *
+     * @return bool
+     */
+    private static function isStraightLine(Stmt $stmt): bool
+    {
+        if (!$stmt instanceof Expression && !$stmt instanceof Unset_) {
+            return false;
+        }
+
+        return (new NodeFinder())->findFirst(
+            [$stmt],
+            fn (Node $node): bool => $node instanceof Throw_ || $node instanceof Exit_
+        ) === null;
+    }
+
+    /**
+     * The restores in one method or function body.
+     *
+     * @param list<Stmt> $body
+     * @param Scope      $scope
+     *
+     * @return list<array{0: string, 1: string, 2: int, 3: int, 4: int, 5: int}>|null
+     */
+    protected function collect(array $body, Scope $scope): ?array
+    {
+        $all  = self::descendants($body);
+
+        // Local variables that hold a saved static property, and how many times each local variable is assigned.
+        $assignments = [];
+        $saves       = [];
+        foreach ($all as $child) {
+            if ($child instanceof Assign || $child instanceof AssignOp || $child instanceof AssignRef) {
+                $target = $child->var;
+            } elseif ($child instanceof Foreach_) {
+                $target = $child->valueVar;
+            } else {
+                continue;
+            }
+
+            if (!$target instanceof Variable || !is_string($target->name)) {
+                continue;
+            }
+
+            $assignments[$target->name] = ($assignments[$target->name] ?? 0) + 1;
+            if ($child instanceof Assign && $child->expr instanceof StaticPropertyFetch) {
+                $resolved = StaticWriteTarget::resolve($child->expr, $scope, $this->reflectionProvider);
+                if ($resolved !== null) {
+                    $saves[$target->name] = $resolved['class'] . '::$' . $resolved['property'];
+                }
             }
         }
 
         $function = StaticWriteTarget::functionKey($scope);
-        $tryEnd       = $node->stmts[count($node->stmts) - 1]->getEndLine();
-        $finallyStart = $node->finally->getStartLine();
-        $finallyEnd   = $node->finally->getEndLine();
         $restored = [];
-        foreach ($targets as [$target, $variable]) {
+        // The function body and every statement list nested in it (if, loop, try, catch and finally blocks).
+        $lists = [array_values($body)];
+        foreach ($all as $child) {
+            if ($child instanceof FunctionLike || $child instanceof Class_) {
+                continue;
+            }
+
+            foreach ($child->getSubNodeNames() as $name) {
+                if (is_array($child->$name)) {
+                    $lists[] = array_values($child->$name);
+                }
+            }
+        }
+
+        foreach ($lists as $list) {
+            foreach ($list as $index => $stmt) {
+                if (!$stmt instanceof TryCatch || $stmt->finally === null || $stmt->stmts === []) {
+                    continue;
+                }
+
+                $windowStart = $stmt->getStartLine();
+                for ($before = $index - 1; $before >= 0; $before--) {
+                    $previous = $list[$before];
+                    if (!$previous instanceof Stmt || !self::isStraightLine($previous)) {
+                        break;
+                    }
+
+                    $windowStart = $previous->getStartLine();
+                }
+
+                foreach ($this->restores($stmt, $scope, $saves, $assignments) as $property) {
+                    $restored[] = [
+                        $function,
+                        $property,
+                        $windowStart,
+                        $stmt->stmts[count($stmt->stmts) - 1]->getEndLine(),
+                        $stmt->finally->getStartLine(),
+                        $stmt->finally->getEndLine(),
+                    ];
+                }
+            }
+        }
+
+        return $restored === [] ? null : $restored;
+    }
+
+    /**
+     * The targets a finally block clears or restores, as "Class::$property" plus any array offsets.
+     *
+     * @param TryCatch              $try
+     * @param Scope                 $scope
+     * @param array<string, string> $saves       Local variable => the static property saved into it.
+     * @param array<string, int>    $assignments Local variable => how many times the function assigns it.
+     *
+     * @return list<string>
+     */
+    private function restores(TryCatch $try, Scope $scope, array $saves, array $assignments): array
+    {
+        if ($try->finally === null) {
+            return [];
+        }
+
+        $targets = [];
+        foreach (self::descendants($try->finally->stmts) as $node) {
+            if ($node instanceof Unset_) {
+                foreach ($node->vars as $var) {
+                    $targets[] = [$var, null];
+                }
+            } elseif ($node instanceof Assign) {
+                $targets[] = [$node->var, $node->expr];
+            } else {
+                // Only assignments and unset() put a value back.
+            }
+        }
+
+        $properties = [];
+        foreach ($targets as [$target, $value]) {
             $path = StaticWriteTarget::offsetPath($target);
             if (str_contains($path, '[]')) {
                 continue;
             }
 
             $resolved = StaticWriteTarget::resolve($target, $scope, $this->reflectionProvider);
-            if ($resolved !== null) {
-                $key        = $resolved['class'] . '::$' . $resolved['property'];
-                $restored[] = [$function, $key . $path, $tryEnd, $variable, $finallyStart, $finallyEnd];
+            if ($resolved === null) {
+                continue;
+            }
+
+            $key = $resolved['class'] . '::$' . $resolved['property'];
+            if ($value === null || self::clearsOrRestores($value, $key, $saves, $assignments)) {
+                $properties[] = $key . $path;
             }
         }
 
-        return $restored === [] ? null : $restored;
+        return $properties;
     }
 }

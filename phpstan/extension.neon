@@ -27,10 +27,10 @@ services:
         tags:
             - phpstan.collector
     -
-        class: Winter\Octane\PHPStan\FinallyRestoreCollector
+        class: Winter\Octane\PHPStan\FinallyRestoreMethodCollector
         tags:
             - phpstan.collector
     -
-        class: Winter\Octane\PHPStan\StaticSaveCollector
+        class: Winter\Octane\PHPStan\FinallyRestoreFunctionCollector
         tags:
             - phpstan.collector

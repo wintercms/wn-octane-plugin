@@ -3,7 +3,8 @@
 namespace Winter\Octane\PHPStan;
 
 use Winter\Octane\PHPStan\CallEdgeCollector;
-use Winter\Octane\PHPStan\FinallyRestoreCollector;
+use Winter\Octane\PHPStan\FinallyRestoreFunctionCollector;
+use Winter\Octane\PHPStan\FinallyRestoreMethodCollector;
 use Winter\Octane\PHPStan\ReflectionResetCollector;
 use Winter\Octane\PHPStan\StaticPropertyWriteCollector;
 use PhpParser\Node;
@@ -35,8 +36,9 @@ use PHPStan\Rules\RuleErrorBuilder;
  * - it happens in test code, or while the worker starts: in a plugin's register() or boot(), or in a function
  *   that only those call;
  * - the value comes only from code: constants, literals, reflection and pure built-in functions;
- * - the function writing it, before the end of a try block, clears the property (or the same array offset) in the
- *   finally block or restores the value it saved before;
+ * - a finally block in the same function clears the property (or the same array offset), or restores a value the
+ *   function saved before and assigns nowhere else, and the write is in the try block or in the straight-line
+ *   statements just before it;
  * - the property is a WeakMap, or is marked worker scoped (a WorkerScoped attribute, or the worker-scoped tag in
  *   its docblock or its class's), which says keeping the value for the worker's life is safe.
  * * A property declared in a trait is reported once for the trait, not once for each class that uses it.
@@ -236,15 +238,12 @@ final class StaticStateRule implements Rule
 
         $coveredNames = $this->reflectionResetNames($node->get(ReflectionResetCollector::class), $resetReachable);
         $restored     = [];
-        foreach ($this->flatten($node->get(FinallyRestoreCollector::class)) as [$function, $property, $tryEnd, $variable, $finallyStart, $finallyEnd]) {
-            $restored[$function][$property][] = [$tryEnd, $variable, $finallyStart, $finallyEnd];
-        }
-
-        $saved = [];
-        foreach ($node->get(StaticSaveCollector::class) as $perNode) {
-            foreach ($perNode as [$function, $variable, $property]) {
-                $saved[$function][$variable][$property] = true;
-            }
+        $restores = array_merge(
+            $this->flatten($node->get(FinallyRestoreMethodCollector::class)),
+            $this->flatten($node->get(FinallyRestoreFunctionCollector::class))
+        );
+        foreach ($restores as [$function, $property, $start, $tryEnd, $finallyStart, $finallyEnd]) {
+            $restored[$function][$property][] = [$start, $tryEnd, $finallyStart, $finallyEnd];
         }
 
         $pending = [];
@@ -270,7 +269,7 @@ final class StaticStateRule implements Rule
                 || (!$write['inClosure'] && isset($startOnly[$write['function']]))
                 || $write['derivedFromCode']
                 || isset($coveredNames[$write['property']])
-                || $this->isRestored($write, $key, $restored, $saved)
+                || $this->isRestored($write, $key, $restored)
             ) {
                 continue;
             }
@@ -300,17 +299,16 @@ final class StaticStateRule implements Rule
 
     /**
      * Whether a finally block in the same function puts the written property (or the written offset) back: the write
-     * comes before the end of the try block (or is the finally block's own write), and the block clears the target or
-     * assigns it the local variable the function saved the property into.
+     * is in the lines the block protects (the try block and the straight-line statements before it) or is the finally
+     * block's own write.
      *
      * @param array{function: string, offset: string, line: int} $write
      * @param string $key
-     * @param array<string, array<string, list<array{0: int, 1: string|null, 2: int, 3: int}>>> $restored
-     * @param array<string, array<string, array<string, true>>> $saved
+     * @param array<string, array<string, list<array{0: int, 1: int, 2: int, 3: int}>>> $restored
      *
      * @return bool
      */
-    private function isRestored(array $write, string $key, array $restored, array $saved): bool
+    private function isRestored(array $write, string $key, array $restored): bool
     {
         $targets = [$key];
         if ($write['offset'] !== '') {
@@ -318,12 +316,9 @@ final class StaticStateRule implements Rule
         }
 
         foreach ($targets as $target) {
-            foreach ($restored[$write['function']][$target] ?? [] as [$tryEnd, $variable, $finallyStart, $finallyEnd]) {
-                $inFinally = $write['line'] >= $finallyStart && $write['line'] <= $finallyEnd;
-                if (
-                    ($inFinally || $write['line'] <= $tryEnd)
-                    && ($variable === null || isset($saved[$write['function']][$variable][$key]))
-                ) {
+            foreach ($restored[$write['function']][$target] ?? [] as [$start, $tryEnd, $finallyStart, $finallyEnd]) {
+                $line = $write['line'];
+                if (($line >= $start && $line <= $tryEnd) || ($line >= $finallyStart && $line <= $finallyEnd)) {
                     return true;
                 }
             }

@@ -37,6 +37,10 @@ class RequestState
 
     public static bool $writtenAfterCleanup = false;
 
+    public static ?string $skippedByReturn = null;
+
+    public static ?string $restoredFromOverwritten = null;
+
     public static array $restoredAtOffset = [];
 
     public static bool $flag = false;
@@ -199,6 +203,46 @@ class RequestState
             $this->handle($user);
         } finally {
             self::$restoredFromSaved = $previous;
+        }
+    }
+
+    /**
+     * Returns before the try block on one path, so the finally block never clears the value.
+     *
+     * @param string $user
+     * @param bool   $skip
+     *
+     * @return void
+     */
+    public function withReturnBeforeTry(string $user, bool $skip): void
+    {
+        self::$skippedByReturn = $user; // expect: winterOctane.staticPropertyNotReset
+        if ($skip) {
+            return;
+        }
+
+        try {
+            $this->handle($user);
+        } finally {
+            self::$skippedByReturn = null;
+        }
+    }
+
+    /**
+     * Saves the old value, then overwrites the saved variable, so finally keeps the request's value.
+     *
+     * @param string $user
+     *
+     * @return void
+     */
+    public function withOverwrittenSave(string $user): void
+    {
+        $previous = self::$restoredFromOverwritten;
+        try {
+            $previous                      = $user;
+            self::$restoredFromOverwritten = $user; // expect: winterOctane.staticPropertyNotReset
+        } finally {
+            self::$restoredFromOverwritten = $previous;
         }
     }
 
