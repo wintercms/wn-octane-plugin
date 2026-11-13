@@ -49,6 +49,14 @@ class RequestState
 
     public static ?string $setBeforeTry = null;
 
+    public static array $resetByTestPlugin = [];
+
+    public static array $resetByTestListener = [];
+
+    public static array $resetInClosure = [];
+
+    public static array $resetByClosureCall = [];
+
     public static array $restoredAtOffset = [];
 
     public static bool $flag = false;
@@ -102,6 +110,16 @@ class RequestState
     public static function addAtBoot(string $value): void
     {
         self::$setBySetterFromBoot[] = $value;
+    }
+
+    /**
+     * Called only from a closure that a plugin's resetWorkerState() defines but does not run.
+     *
+     * @return void
+     */
+    public static function clearFromClosure(): void
+    {
+        self::$resetByClosureCall = [];
     }
 
     /**
@@ -160,6 +178,10 @@ class RequestState
         self::$clearedByPluginWithoutCalls[] = $user;
         self::addFilled($user);
         self::$partlyReset[$user] = $user; // expect: winterOctane.staticPropertyNotReset
+        self::$resetByTestPlugin[]   = $user; // expect: winterOctane.staticPropertyNotReset
+        self::$resetByTestListener[] = $user; // expect: winterOctane.staticPropertyNotReset
+        self::$resetInClosure[]      = $user; // expect: winterOctane.staticPropertyNotReset
+        self::$resetByClosureCall[]  = $user; // expect: winterOctane.staticPropertyNotReset
 
         // Winter.Octane clears this one itself (ResetsRequestState::STATIC_CACHES).
         \System\Models\Parameter::$cache[$user] = $user;
