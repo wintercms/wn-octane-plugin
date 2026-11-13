@@ -225,7 +225,8 @@ final class CallEdgeCollector implements Collector
             $edges[] = [$caller, $callee, $context];
         }
 
-        $listener = $this->boundaryListener($node, $scope);
+        // A listener registered by test code never runs in a production worker.
+        $listener = $context === self::CONTEXT_TEST ? null : $this->boundaryListener($node, $scope);
         if ($listener !== null) {
             foreach ($this->boundaryListenerCallees($listener, $scope) as $callee) {
                 $edges[] = [self::REQUEST_BOUNDARY, $callee, self::CONTEXT_NORMAL];

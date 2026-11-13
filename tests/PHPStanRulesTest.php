@@ -73,7 +73,11 @@ class PHPStanRulesTest extends TestCase
     private function expectedErrors(): array
     {
         $expected = [];
-        foreach (glob(dirname(__DIR__) . '/phpstan/fixtures/*.php') ?: [] as $file) {
+        $files = array_merge(
+            glob(dirname(__DIR__) . '/phpstan/fixtures/*.php') ?: [],
+            glob(dirname(__DIR__) . '/phpstan/fixtures/tests/*.php') ?: []
+        );
+        foreach ($files as $file) {
             foreach (file($file) ?: [] as $index => $line) {
                 if (preg_match('#// expect: ([\w.]+)(?: \((.+)\))?\s*$#', $line, $match)) {
                     $expected[realpath($file) . ':' . ($index + 1) . ':' . $match[1]] = $match[2] ?? '';

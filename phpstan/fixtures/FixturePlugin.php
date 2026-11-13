@@ -46,6 +46,13 @@ class FixturePlugin extends PluginBase
     public function resetWorkerState(): void
     {
         Resetter::run();
+
+        // Defined here but run later, if ever: neither the write nor the call counts as a reset.
+        $later = function (): void {
+            RequestState::$resetInClosure = [];
+            RequestState::clearFromClosure();
+        };
+        unset($later);
     }
 }
 

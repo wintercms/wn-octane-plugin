@@ -28,7 +28,7 @@ use PHPStan\Rules\RuleErrorBuilder;
  *   `null` counts), or code further down that call graph clears it: assigns a constant such as `[]` or `null`,
  *   unsets it, or sets it by name through reflection. Only a write to the whole property counts, not one array
  *   offset. Deeper reset code that fills a property does not count, since the same code may also run during a
- *   request;
+ *   request. Test code, and a closure that reset code only defines, never count as a reset;
  * - a closure that runs at a request boundary (an Octane operation event listener or a terminating() callback)
  *   clears it in its body or in a method it calls directly. A boundary closure is not followed further, because
  *   it often does conditional work;
@@ -77,8 +77,12 @@ final class StaticStateRule implements Rule
         $incoming   = [];
         $resetRoots = [];
         foreach ($this->flatten($collected) as [$caller, $callee, $context]) {
-            $edges[$caller][$callee] = true;
-            $incoming[$callee][]     = [$caller, $context];
+            // A closure's calls run when the closure runs, not when the function that defines it does.
+            if ($context !== CallEdgeCollector::CONTEXT_CLOSURE) {
+                $edges[$caller][$callee] = true;
+            }
+
+            $incoming[$callee][] = [$caller, $context];
             if ($context === CallEdgeCollector::CONTEXT_RESET) {
                 $resetRoots[] = $caller;
             }
@@ -251,6 +255,8 @@ final class StaticStateRule implements Rule
             $key = $write['class'] . '::$' . $write['property'];
             if (
                 $write['offset'] === ''
+                && !$write['test']
+                && !$write['inClosure']
                 && (
                     $write['resetRoot']
                     || isset($resetDirect[$write['function']])
