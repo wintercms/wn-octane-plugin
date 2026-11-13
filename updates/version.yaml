@@ -16,3 +16,5 @@
     - Keep parsed theme templates in worker memory between requests, and require PHP 8.2.
 1.6.0:
     - Add PHPStan rules that find static state a worker would carry from one request to the next.
+1.6.1:
+    - Stop counting resets in test code or in closures as clearing a static in the PHPStan rules.
