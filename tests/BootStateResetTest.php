@@ -5,11 +5,14 @@ namespace Winter\Octane\Tests;
 use Backend\Classes\BackendController;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
+use ReflectionProperty;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
+use System\Classes\CombineAssets;
 use System\Classes\VersionYamlProcessor;
 use Throwable;
 use Winter\Storm\Database\Updater;
+use Winter\Storm\Parse\Assetic\Filter\ScssCompiler;
 use Winter\Storm\Support\Facades\Yaml;
 
 /**
@@ -191,6 +194,55 @@ class BootStateResetTest extends PersistentWorkerTestCase
         foreach ($results as $result) {
             $this->assertSame(403, $result instanceof Response ? $result->getStatusCode() : null);
             $this->assertStringContainsString('icon-lock', $this->content($result), 'The back-end access denied page was not rendered.');
+        }
+    }
+
+    /**
+     * Requests that use the asset combiner do not add to the cms.combiner.beforePrepare listeners that
+     * later requests run. The combiner builds an ScssCompiler for each request, and each compiler
+     * adds a listener.
+     *
+     * @return void
+     */
+    public function testAssetCombinerRequestsDoNotPileUpBeforePrepareListeners(): void
+    {
+        $this->addWorkerRoute('_boot/combiner', function () {
+            CombineAssets::instance();
+
+            return (string) count(app('events')->getListeners('cms.combiner.beforePrepare'));
+        });
+
+        $results = $this->dispatchWorkerRequests(...array_fill(0, 5, Request::create('/_boot/combiner')));
+        $counts = array_map(fn ($result) => $this->content($result), $results);
+
+        $this->assertGreaterThan(0, (int) $counts[0], 'The combiner\'s SCSS compiler did not add its listener.');
+        $this->assertSame(array_fill(0, 5, $counts[0]), $counts, 'The listener count must not grow with each request that uses the combiner.');
+    }
+
+    /**
+     * The listener a request's ScssCompiler adds still hears the event during that request, after
+     * earlier requests have had theirs removed.
+     *
+     * @return void
+     */
+    public function testAnScssCompilerStillHearsBeforePrepareInItsOwnRequest(): void
+    {
+        $this->addWorkerRoute('_boot/scss', function () {
+            $compiler = new ScssCompiler();
+
+            app('events')->dispatch('cms.combiner.beforePrepare', [CombineAssets::instance(), ['theme.scss', 'theme.css']]);
+
+            return json_encode((new ReflectionProperty(ScssCompiler::class, 'currentFiles'))->getValue($compiler));
+        });
+
+        $results = $this->dispatchWorkerRequests(
+            Request::create('/_boot/scss'),
+            Request::create('/_boot/scss'),
+            Request::create('/_boot/scss')
+        );
+
+        foreach ($results as $result) {
+            $this->assertSame('["theme.scss"]', $this->content($result));
         }
     }
 
