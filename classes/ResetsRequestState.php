@@ -101,7 +101,7 @@ class ResetsRequestState
             fn () => $this->resetManagers($base, $sandbox),
             fn () => $this->resetStaticCaches(),
             fn () => $this->restoreMassAssignmentGuard(),
-            fn () => $this->restoreExceptionRenderListeners($base),
+            fn () => $this->restoreBootListeners($base),
             fn () => $this->restoreYamlProcessor($base),
             fn () => $this->resetSharedViewData($base, $sandbox),
             fn () => $this->rollBackTransactions($base, $sandbox),
@@ -1001,9 +1001,20 @@ class ResetsRequestState
     protected static array $bootState = [];
 
     /**
-     * The event whose listeners restoreExceptionRenderListeners() restores.
+     * The events whose listeners restoreBootListeners() restores. Core adds a listener to each of them
+     * on every request that reaches the code named here, and never removes it.
+     *
+     * - exception.beforeRender: BackendController::run(), on every back-end request.
+     * - cms.combiner.beforePrepare: the constructor of Storm's ScssCompiler. CombineAssets builds one
+     *   in init(), and the reset forgets the CombineAssets singleton, so every request that uses the
+     *   asset combiner builds another.
+     *
+     * @var list<string>
      */
-    protected const EXCEPTION_RENDER_EVENT = 'exception.beforeRender';
+    protected const BOOT_LISTENER_EVENTS = [
+        'exception.beforeRender',
+        'cms.combiner.beforePrepare',
+    ];
 
     /**
      * Put Eloquent's mass-assignment protection back to its boot-time state.
@@ -1027,23 +1038,31 @@ class ResetsRequestState
     }
 
     /**
-     * Put the exception.beforeRender listeners back to the ones registered while the worker booted.
+     * Put the listeners of BOOT_LISTENER_EVENTS back to the ones registered while the worker booted.
      *
-     * BackendController::run() adds a listener to this event on every back-end request, so that an
-     * abort(404) or abort(403) inside a back-end controller renders the back-end's error page. Under
-     * PHP-FPM the listener dies with the request. The dispatcher lives in the base container, so in
-     * a worker the listeners pile up, one per back-end request, each holding its controller, and a
-     * stale one renders the back-end's access denied page for a later front-end 403. Restoring the
-     * boot-time listeners at the start of each operation leaves the current request's own listener
-     * in place for that request.
+     * BackendController::run() adds a listener to exception.beforeRender on every back-end request,
+     * so that an abort(404) or abort(403) inside a back-end controller renders the back-end's error
+     * page. Under PHP-FPM the listener dies with the request. The dispatcher lives in the base
+     * container, so in a worker the listeners pile up, one per back-end request, each holding its
+     * controller, and a stale one renders the back-end's access denied page for a later front-end
+     * 403.
      *
-     * A listener a plugin adds to this event during a request lasts for that request only, as under
-     * PHP-FPM. One added once per worker, after boot, has to be added while booting instead.
+     * Storm's ScssCompiler adds a listener to cms.combiner.beforePrepare when it is constructed, to
+     * note the SCSS files being combined. The listeners pile up the same way, one per request that
+     * uses the asset combiner, each holding its compiler. The combiner dispatches the event for every
+     * asset list on a page, and each dispatch runs all of them, so every page gets slower with each
+     * request the worker has served.
+     *
+     * Restoring the boot-time listeners at the start of each operation leaves the current request's
+     * own listeners in place for that request.
+     *
+     * A listener a plugin adds to one of these events during a request lasts for that request only,
+     * as under PHP-FPM. One added once per worker, after boot, has to be added while booting instead.
      *
      * @param \Illuminate\Foundation\Application|null $base
      * @return void
      */
-    protected function restoreExceptionRenderListeners($base): void
+    protected function restoreBootListeners($base): void
     {
         if ($base === null || !$base->resolved('events')) {
             return;
@@ -1055,32 +1074,42 @@ class ResetsRequestState
             || !property_exists(\Illuminate\Events\Dispatcher::class, 'listeners')
             || !property_exists(\Winter\Storm\Events\Dispatcher::class, 'sorted')
         ) {
-            $this->warnOnce('Winter.Octane: the event dispatcher is not a Storm dispatcher with $listeners and $sorted properties, so the exception.beforeRender listeners added by back-end requests are not removed between requests.');
+            $this->warnOnce('Winter.Octane: the event dispatcher is not a Storm dispatcher with $listeners and $sorted properties, so the listeners that requests add to ' . implode(' and ', static::BOOT_LISTENER_EVENTS) . ' are not removed between requests.');
 
             return;
         }
 
         $listeners = new \ReflectionProperty(\Illuminate\Events\Dispatcher::class, 'listeners');
         $all = $listeners->getValue($events);
-        $current = $all[static::EXCEPTION_RENDER_EVENT] ?? null;
 
-        if (!array_key_exists('exceptionRenderListeners', static::$bootState)) {
-            static::$bootState['exceptionRenderListeners'] = $current;
+        if (!array_key_exists('listeners', static::$bootState)) {
+            static::$bootState['listeners'] = array_intersect_key($all, array_flip(static::BOOT_LISTENER_EVENTS));
 
             return;
         }
 
-        $baseline = static::$bootState['exceptionRenderListeners'];
+        $baselines = static::$bootState['listeners'];
+        $restored = [];
 
-        if ($current === $baseline) {
+        foreach (static::BOOT_LISTENER_EVENTS as $event) {
+            $baseline = $baselines[$event] ?? null;
+
+            if (($all[$event] ?? null) === $baseline) {
+                continue;
+            }
+
+            if ($baseline === null) {
+                unset($all[$event]);
+            }
+            else {
+                $all[$event] = $baseline;
+            }
+
+            $restored[] = $event;
+        }
+
+        if ($restored === []) {
             return;
-        }
-
-        if ($baseline === null) {
-            unset($all[static::EXCEPTION_RENDER_EVENT]);
-        }
-        else {
-            $all[static::EXCEPTION_RENDER_EVENT] = $baseline;
         }
 
         $listeners->setValue($events, $all);
@@ -1088,7 +1117,11 @@ class ResetsRequestState
         // Storm caches the listeners sorted by priority, and would keep dispatching the stale list.
         $sorted = new \ReflectionProperty(\Winter\Storm\Events\Dispatcher::class, 'sorted');
         $cache = $sorted->getValue($events);
-        unset($cache[static::EXCEPTION_RENDER_EVENT]);
+
+        foreach ($restored as $event) {
+            unset($cache[$event]);
+        }
+
         $sorted->setValue($events, $cache);
     }
 

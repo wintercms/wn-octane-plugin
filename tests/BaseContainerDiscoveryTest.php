@@ -65,7 +65,7 @@ class BaseContainerDiscoveryTest extends PersistentWorkerTestCase
         'validation.presence' => 'the database presence verifier; the validator sets its connection each time it uses it',
 
         // State that this plugin puts back to its boot-time value at the start of each operation.
-        'events' => 'the listeners registered at boot; BackendController::run() adds an exception.beforeRender listener on every back-end request, and ResetsRequestState restores that event\'s listeners to the boot-time set',
+        'events' => 'the listeners registered at boot; BackendController::run() adds an exception.beforeRender listener on every back-end request and each ScssCompiler adds a cms.combiner.beforePrepare listener, and ResetsRequestState restores those events\' listeners to the boot-time set',
         'parse.yaml' => 'the YAML parser; ResetsRequestState restores its processor to the boot-time one, since Yaml::withProcessor() leaves its processor in place when the callback throws',
 
         // State that is cleared per operation by something other than this plugin.
