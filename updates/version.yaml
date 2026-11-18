@@ -20,3 +20,5 @@
     - Stop counting resets in test code or in closures as clearing a static in the PHPStan rules.
 1.6.2:
     - Stop the asset combiner adding a cms.combiner.beforePrepare listener on every request, which made pages slower the longer a worker ran.
+1.7.0:
+    - Add opt-in warm-up requests that a worker sends when it starts, listed in octane.warm_up_paths.
