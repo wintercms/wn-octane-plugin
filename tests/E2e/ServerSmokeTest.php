@@ -60,7 +60,8 @@ class ServerSmokeTest extends OctaneServerTestCase
 
     /**
      * A worker sends its warm-up request before it serves a client, and what that request planted is
-     * gone when the first client request arrives.
+     * gone when the first client request arrives. A RoadRunner worker starts with its first request
+     * already waiting, so it sends none.
      *
      * @return void
      */
@@ -71,7 +72,9 @@ class ServerSmokeTest extends OctaneServerTestCase
 
         $first = $this->get('/_octane-smoke/read');
 
-        $this->assertSame(1, $first['warm_ups'], 'the worker did not send its warm-up request');
+        $warmUps = $this->server === 'roadrunner' ? 0 : 1;
+
+        $this->assertSame($warmUps, $first['warm_ups'], "the worker did not send {$warmUps} warm-up request(s)");
         $this->assertFalse($first['twig_gate_open'], 'the Twig include gate the warm-up request planted survived');
         $this->assertFalse($first['view_leak_present'], 'the view share the warm-up request planted survived');
         $this->assertFalse($first['code_parser_dirty'], 'the code parser cache the warm-up request planted survived');
@@ -81,7 +84,7 @@ class ServerSmokeTest extends OctaneServerTestCase
 
         $this->assertSame($first['pid'], $planted['pid']);
         $this->assertSame($first['pid'], $again['pid'], 'the worker restarted, so this run proves nothing');
-        $this->assertSame(1, $again['warm_ups'], 'a client request was counted as a warm-up request');
+        $this->assertSame($warmUps, $again['warm_ups'], 'a client request was counted as a warm-up request');
     }
 
     /**

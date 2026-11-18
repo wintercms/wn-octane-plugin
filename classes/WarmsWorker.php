@@ -152,7 +152,7 @@ class WarmsWorker
                  */
                 $app->instance('request', $bootRequest);
 
-                (fn () => $this->currentRequest = $bootRequest)->call($app->make('router'));
+                $this->restoreRouterRequest($app->make('router'), $bootRequest);
 
                 if ($app->resolved('auth')) {
                     $app->make('auth')->forgetGuards();
@@ -169,6 +169,28 @@ class WarmsWorker
                 \Laravel\Octane\CurrentApplication::set($app);
             }
         }
+    }
+
+    /**
+     * Give the router back the request the worker booted with. The router keeps its current request in
+     * a protected property with no setter, so a core change to that property is logged and skipped.
+     *
+     * @param \Illuminate\Routing\Router $router
+     * @param \Illuminate\Http\Request $bootRequest
+     * @param string $property The router property that holds its current request.
+     * @return void
+     */
+    protected function restoreRouterRequest($router, Request $bootRequest, string $property = 'currentRequest'): void
+    {
+        if (!property_exists($router, $property)) {
+            $this->logQuietly(new \RuntimeException(
+                "the router has no \${$property} property, so it keeps the warm-up request until the next request"
+            ));
+
+            return;
+        }
+
+        (fn () => $this->{$property} = $bootRequest)->call($router);
     }
 
     /**

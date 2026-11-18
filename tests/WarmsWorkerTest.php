@@ -215,6 +215,58 @@ class WarmsWorkerTest extends PersistentWorkerTestCase
     }
 
     /**
+     * A router that no longer has the property its current request is kept in is logged and left alone.
+     *
+     * @return void
+     */
+    public function testAMissingRouterPropertyIsLoggedAndSkipped(): void
+    {
+        $router = $this->app->make('router');
+        $logged = [];
+
+        $warmsWorker = new class ($logged) extends WarmsWorker
+        {
+            /**
+             * @param array<int, string> $logged
+             */
+            public function __construct(protected array &$logged)
+            {
+            }
+
+            /**
+             * @param \Illuminate\Routing\Router $router
+             * @return void
+             */
+            public function restoreWith($router, string $property): void
+            {
+                $this->restoreRouterRequest($router, \Illuminate\Http\Request::create('/boot'), $property);
+            }
+
+            /**
+             * @param \Throwable $ex
+             * @return void
+             */
+            protected function logQuietly(\Throwable $ex): void
+            {
+                $this->logged[] = $ex->getMessage();
+            }
+        };
+
+        $warmsWorker->restoreWith($router, 'renamedRequest');
+
+        $this->assertSame(
+            ['the router has no $renamedRequest property, so it keeps the warm-up request until the next request'],
+            $logged
+        );
+        $this->assertFalse(property_exists($router, 'renamedRequest'), 'The restore added a property to the router.');
+
+        $warmsWorker->restoreWith($router, 'currentRequest');
+
+        $this->assertSame('boot', $router->getCurrentRequest()->path());
+        $this->assertCount(1, $logged);
+    }
+
+    /**
      * A worker that cannot read the warm-up paths logs it and still starts.
      *
      * @return void
