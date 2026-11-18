@@ -59,6 +59,32 @@ class ServerSmokeTest extends OctaneServerTestCase
     }
 
     /**
+     * A worker sends its warm-up request before it serves a client, and what that request planted is
+     * gone when the first client request arrives.
+     *
+     * @return void
+     */
+    public function testAWarmUpRequestRunsBeforeTheFirstRequestAndLeavesNothing(): void
+    {
+        $this->serverEnvironment = ['WINTER_OCTANE_SMOKE_WARM_UP' => '1'];
+        $this->startServer();
+
+        $first = $this->get('/_octane-smoke/read');
+
+        $this->assertSame(1, $first['warm_ups'], 'the worker did not send its warm-up request');
+        $this->assertFalse($first['twig_gate_open'], 'the Twig include gate the warm-up request planted survived');
+        $this->assertFalse($first['view_leak_present'], 'the view share the warm-up request planted survived');
+        $this->assertFalse($first['code_parser_dirty'], 'the code parser cache the warm-up request planted survived');
+
+        $planted = $this->get('/_octane-smoke/plant');
+        $again = $this->get('/_octane-smoke/read');
+
+        $this->assertSame($first['pid'], $planted['pid']);
+        $this->assertSame($first['pid'], $again['pid'], 'the worker restarted, so this run proves nothing');
+        $this->assertSame(1, $again['warm_ups'], 'a client request was counted as a warm-up request');
+    }
+
+    /**
      * Under FrankenPHP, a path Winter boots without its non-elevated plugins is served outside the
      * worker, by a request that boots the application as PHP-FPM does. Swoole and RoadRunner serve it
      * from the worker, which booted with every plugin.

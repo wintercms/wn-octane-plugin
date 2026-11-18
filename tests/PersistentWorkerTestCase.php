@@ -417,7 +417,23 @@ abstract class PersistentWorkerTestCase extends PluginTestCase
      */
     protected function addWorkerRoute(string $uri, callable|string $handler, string $method = 'GET', array $middleware = []): void
     {
-        $router = $this->bootWorker()->make('router');
+        $this->prependRoute($this->bootWorker(), $uri, $handler, $method, $middleware);
+    }
+
+    /**
+     * Register a route ahead of the application's other routes. Unlike addWorkerRoute(), this does not
+     * boot the worker, so a test can add a route the worker requests while it starts.
+     *
+     * @param \Illuminate\Foundation\Application $app
+     * @param string $uri
+     * @param callable|string $handler A closure, or a controller action such as 'Class@method'.
+     * @param string $method
+     * @param array<int, string> $middleware Middleware or middleware groups for the route, such as 'web'.
+     * @return void
+     */
+    protected function prependRoute(Application $app, string $uri, callable|string $handler, string $method = 'GET', array $middleware = []): void
+    {
+        $router = $app->make('router');
         $routes = $router->getRoutes();
 
         $existing = [];

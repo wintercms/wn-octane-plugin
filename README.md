@@ -72,7 +72,7 @@ These two servers can't send a request anywhere but the worker, so non-elevated 
 
 ## Performance
 
-A long-running worker can hold on to work that PHP-FPM has to repeat, so the plugin does that for you. There's nothing to configure, and none of it runs under PHP-FPM.
+A long-running worker can hold on to work that PHP-FPM has to repeat, so the plugin does that for you. Apart from warm-up requests, there's nothing to configure, and none of it runs under PHP-FPM.
 
 **Theme templates.** If a theme reads from a plain `FileDatasource`, the worker reads it through `WorkerFileDatasource` instead. That class remembers resolved paths and file contents, but still stats the file on every read, so you'll see a template change on the next read. It leaves subclasses of `FileDatasource` alone, along with the `AutoDatasource` that core builds for child themes and database templates.
 
@@ -83,6 +83,16 @@ Symlinks inside a theme get checked on every read. If you repoint a symlink on t
 **Parsed YAML.** With `app.debug` off, values cached by `Yaml::parseFile()` stay in the worker's memory between requests. The file's modification time is part of the cache key, so an edit that changes it gets parsed again.
 
 **The class scan.** The request-state reset has to find the classes that use certain traits. The first full scan now happens when the worker starts, so your first request doesn't pay for it.
+
+**Warm-up requests.** A worker's first request is slower than the rest, because it loads classes and builds whatever your site keeps for the life of the worker. A server that prefers one worker leaves the others unused until traffic rises, so they pay for that when the site is busiest. To have each worker pay when it starts instead, list the paths to request in `config/octane.php`:
+
+```php
+'warm_up_paths' => ['/'],
+```
+
+Each worker requests those paths on your `app.url` before it serves a visitor, and throws the responses away. A warm-up request is a GET from a visitor with no cookies, and it goes through your middleware like any other, so it can start a session or count as a page view. Pick a public page that does the work your real pages do. To leave something out of a warm-up request, check for the request attribute: `request()->attributes->get(\Winter\Octane\Classes\WarmsWorker::WARM_UP_ATTRIBUTE)`. A warm-up request that fails, or that gets a 4xx or 5xx response, is logged and the worker starts anyway. A worker takes no traffic until its warm-up requests finish, so keep the list short.
+
+Warm-up requests are sent under FrankenPHP and Swoole. A RoadRunner worker starts when its first request has already arrived, so a warm-up request there would only make that visitor wait, and the plugin sends none. Swoole's task workers send none either, because they serve no requests.
 
 ## Disabling the plugin
 

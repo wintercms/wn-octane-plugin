@@ -14,6 +14,14 @@ if (!env('WINTER_OCTANE_SMOKE')) {
 use Illuminate\Support\Facades\Route;
 
 /*
+ * With WINTER_OCTANE_SMOKE_WARM_UP set, each worker sends the route that plants state as its warm-up
+ * request, so a test can check that the request ran and that what it planted is gone.
+ */
+if (env('WINTER_OCTANE_SMOKE_WARM_UP')) {
+    config(['octane.warm_up_paths' => ['/_octane-smoke/plant']]);
+}
+
+/*
  * Class names are written out in full inside these closures because Swoole runs some of them as
  * tasks, which serializes them, and the serialized copy is read without this file's imports.
  */
@@ -33,12 +41,17 @@ $readState = function (): array {
         'twig_gate_open'    => \System\Twig\Loader::$allowInclude,
         'view_leak_present' => array_key_exists('octane_smoke_leak', app('view')->getShared()),
         'code_parser_dirty' => array_key_exists('octane-smoke', $parserCache ?? []),
+        'warm_ups'          => $GLOBALS['octane_smoke_warm_ups'] ?? 0,
         'pid'               => getmypid(),
     ];
 };
 
 Route::get('/_octane-smoke/plant', function () use ($plantState) {
     $plantState();
+
+    if (request()->attributes->get(\Winter\Octane\Classes\WarmsWorker::WARM_UP_ATTRIBUTE)) {
+        $GLOBALS['octane_smoke_warm_ups'] = ($GLOBALS['octane_smoke_warm_ups'] ?? 0) + 1;
+    }
 
     return response()->json(['planted' => true, 'pid' => getmypid()]);
 });

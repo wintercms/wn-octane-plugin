@@ -222,6 +222,16 @@ class Plugin extends PluginBase
         $this->app->make('events')->listen(\Laravel\Octane\Events\WorkerStarting::class, [WarmsWorker::class, 'handle']);
 
         /*
+         * The warm-up requests run last, after every other listener has prepared the worker, so they see
+         * the worker a real first request would see.
+         */
+        $this->app->make('events')->listen(
+            \Laravel\Octane\Events\WorkerStarting::class,
+            [WarmsWorker::class, 'sendWarmUpRequests'],
+            PHP_INT_MIN
+        );
+
+        /*
          * ResolveAuthIpAddress is appended to the global stack, so it runs after the trusted-proxy
          * middleware. ServePublicFiles is prepended, so a whitelisted file is returned before any other
          * middleware runs, as it is when a web server serves it.
