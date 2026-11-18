@@ -55,6 +55,11 @@ abstract class OctaneServerTestCase extends TestCase
     protected string $serverLog = '';
 
     /**
+     * @var array<string, string> Extra environment variables for the server process.
+     */
+    protected array $serverEnvironment = [];
+
+    /**
      * @var string|null Where the site's own worker file was moved while the test runs.
      */
     protected ?string $movedWorker = null;
@@ -153,6 +158,7 @@ abstract class OctaneServerTestCase extends TestCase
         );
 
         $environment['WINTER_OCTANE_SMOKE'] = '1';
+        $environment = array_merge($environment, $this->serverEnvironment);
 
         $this->serverProcess = proc_open(
             $command,
